@@ -1,0 +1,106 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Product in store inventory",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "price": { "type": "number" },
+        "quantity": { "type": "number" },
+        "imageUrl": { "type": "string" },
+        "category": { "type": "string" }
+      },
+      "required": ["name", "price"]
+    },
+    "GiftTable": {
+      "title": "GiftTable",
+      "description": "Gift table for baby store event",
+      "type": "object",
+      "properties": {
+        "slug": { "type": "string" },
+        "familyName": { "type": "string" },
+        "babyName": { "type": "string" },
+        "eventDate": { "type": "string" },
+        "greeting": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["slug", "familyName", "eventDate"]
+    },
+    "TableItem": {
+      "title": "TableItem",
+      "description": "Item assigned to a gift table",
+      "type": "object",
+      "properties": {
+        "productId": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "price": { "type": "number" },
+        "imageUrl": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": [
+            "disponible",
+            "reservado_en_tienda",
+            "seleccionado",
+            "pagado",
+            "dado_de_baja"
+          ]
+        },
+        "donorName": { "type": "string" },
+        "donorPhone": { "type": "string" },
+        "paymentMethod": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "required": ["name", "price", "status"]
+    },
+    "ExtraProduct": {
+      "title": "ExtraProduct",
+      "description": "Cross-selling item shown on gift tables",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "price": { "type": "number" },
+        "imageUrl": { "type": "string" },
+        "badge": { "type": "string" }
+      },
+      "required": ["name", "price"]
+    },
+    "StoreConfig": {
+      "title": "StoreConfig",
+      "description": "Store configuration and WhatsApp number",
+      "type": "object",
+      "properties": {
+        "whatsappNumber": { "type": "string" },
+        "storeName": { "type": "string" },
+        "currencySymbol": { "type": "string" },
+        "storeAddress": { "type": "string" }
+      },
+      "required": ["whatsappNumber", "storeName"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Inventory products collection"
+    },
+    "/gift_tables/{tableId}": {
+      "schema": "GiftTable",
+      "description": "Gift tables created by parents or store admin"
+    },
+    "/gift_tables/{tableId}/table_items/{itemId}": {
+      "schema": "TableItem",
+      "description": "Items in a specific gift table"
+    },
+    "/extra_products/{extraId}": {
+      "schema": "ExtraProduct",
+      "description": "Cross-selling extra accessories"
+    },
+    "/config/{docId}": {
+      "schema": "StoreConfig",
+      "description": "Store configuration"
+    }
+  }
+}

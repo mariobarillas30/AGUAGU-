@@ -1,0 +1,6 @@
+{
+  "name": "Agu Agu - Mesa de Regalos",
+  "description": "Plataforma de mesa de regalos oficial de Agu Agu con catálogo de productos para bebés, reservas en tienda y pagos con tarjeta.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
