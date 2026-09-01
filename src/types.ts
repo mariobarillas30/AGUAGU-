@@ -15,6 +15,11 @@ export interface Product {
   images?: string[]; // Varias fotos (diferentes vistas, ángulos o colores)
   category?: string;
   createdAt?: string | number;
+  lastReservation?: {
+    tableId: string;
+    itemId: string;
+    timestamp: string;
+  };
 }
 
 export interface TableItem {

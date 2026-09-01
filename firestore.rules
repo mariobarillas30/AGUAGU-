@@ -2,28 +2,89 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // Configuración general de la tienda
+    // Función auxiliar para determinar si el usuario es un administrador autenticado
+    function isAdmin() {
+      return request.auth != null;
+    }
+
+    // 1. Configuración de la tienda (whatsapp, moneda, dirección)
     match /config/{docId} {
-      allow read, write: if true;
+      // Lectura pública requerida para desplegar número de WhatsApp y moneda en catálogo y mesas
+      allow read: if true;
+      // Solo administradores pueden cambiar la configuración
+      allow write: if isAdmin();
     }
     
-    // Inventario general de productos
+    // 2. Inventario general de productos
     match /products/{productId} {
-      allow read, write: if true;
-    }
-    
-    // Productos extra para venta cruzada
-    match /extra_products/{extraId} {
-      allow read, write: if true;
-    }
-    
-    // Mesas de regalo y sus items
-    match /gift_tables/{tableId} {
-      allow read, write: if true;
+      // Lectura pública para desplegar catálogo y verificar disponibilidad
+      allow read: if true;
       
-      // Subcolección de items de la mesa
+      // Creación y eliminación exclusivas de administradores
+      allow create, delete: if isAdmin();
+      
+      // Actualización:
+      // - Administradores tienen control total.
+      // - Usuarios públicos/invitados ÚNICAMENTE pueden decrementar en exactamente 1 el campo quantity
+      //   siempre que la operación sea parte de una transacción atómica verificable mediante get() y getAfter():
+      //   1) Solo se modifican 'quantity' y el objeto 'lastReservation'.
+      //   2) El stock previo debe ser mayor a 0 y decrementar exactamente en 1.
+      //   3) lastReservation debe contener tableId, itemId y timestamp válidos.
+      //   4) El table_item especificado existía y estaba en estado 'disponible' para este productId antes de la transacción (get).
+      //   5) En la MISMA transacción atómica (getAfter), el table_item pasó a 'reservado_en_tienda' o 'seleccionado'.
+      allow update: if isAdmin() || (
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['quantity', 'lastReservation']) &&
+        resource.data.quantity is number &&
+        resource.data.quantity > 0 &&
+        request.resource.data.quantity == resource.data.quantity - 1 &&
+        request.resource.data.lastReservation is map &&
+        request.resource.data.lastReservation.keys().hasAll(['tableId', 'itemId', 'timestamp']) &&
+        request.resource.data.lastReservation.tableId is string &&
+        request.resource.data.lastReservation.itemId is string &&
+        request.resource.data.lastReservation.timestamp is string &&
+        get(/databases/$(database)/documents/gift_tables/$(request.resource.data.lastReservation.tableId)/table_items/$(request.resource.data.lastReservation.itemId)).data.status == 'disponible' &&
+        get(/databases/$(database)/documents/gift_tables/$(request.resource.data.lastReservation.tableId)/table_items/$(request.resource.data.lastReservation.itemId)).data.productId == productId &&
+        (
+          getAfter(/databases/$(database)/documents/gift_tables/$(request.resource.data.lastReservation.tableId)/table_items/$(request.resource.data.lastReservation.itemId)).data.status == 'reservado_en_tienda' ||
+          getAfter(/databases/$(database)/documents/gift_tables/$(request.resource.data.lastReservation.tableId)/table_items/$(request.resource.data.lastReservation.itemId)).data.status == 'seleccionado'
+        )
+      );
+    }
+    
+    // 3. Productos extra para detalles especiales y venta cruzada
+    match /extra_products/{extraId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
+    // 4. Mesas de regalo
+    match /gift_tables/{tableId} {
+      // Lectura pública de la información de la mesa (nombres, fecha, saludo)
+      allow read: if true;
+      allow write: if isAdmin();
+      
+      // Subcolección de items de la mesa de regalos
       match /table_items/{itemId} {
-        allow read, write: if true;
+        // Lectura pública de los items de la mesa
+        allow read: if true;
+        
+        // Creación y eliminación reservadas para el administrador
+        allow create, delete: if isAdmin();
+        
+        // Actualización:
+        // - Administradores tienen control total de cambios de estado y bajas.
+        // - Invitados anónimos solo pueden transicionar desde 'disponible' hacia 'reservado_en_tienda' o 'seleccionado',
+        //   escribiendo únicamente los campos de reserva válidos con validaciones de tipo.
+        allow update: if isAdmin() || (
+          resource.data.status == 'disponible' &&
+          (request.resource.data.status == 'reservado_en_tienda' || request.resource.data.status == 'seleccionado') &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'donorName', 'donorPhone', 'paymentMethod', 'notes', 'updatedAt'
+          ]) &&
+          (!('donorName' in request.resource.data) || request.resource.data.donorName is string) &&
+          (!('donorPhone' in request.resource.data) || request.resource.data.donorPhone is string) &&
+          (!('notes' in request.resource.data) || request.resource.data.notes is string)
+        );
       }
     }
   }

@@ -107,6 +107,8 @@ export const GiftItemCard: React.FC<GiftItemCardProps> = ({
           <img
             src={allImages[currentImageIndex] || item.imageUrl}
             alt={`${item.name} - Vista ${currentImageIndex + 1}`}
+            loading="lazy"
+            decoding="async"
             className={`w-full h-full object-cover transition-transform duration-300 ${
               isAvailable ? 'group-hover:scale-105' : 'grayscale-[25%]'
             }`}

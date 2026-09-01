@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ArrowLeft,
   Calendar,
@@ -23,6 +23,7 @@ import {
   markItemAsDropped,
   updateTableItemStatus,
   addItemsToGiftTable,
+  subscribeToGiftTableDetail,
 } from '../../services/dbService';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 
@@ -36,13 +37,17 @@ interface GiftTableDetailViewProps {
 }
 
 export const GiftTableDetailView: React.FC<GiftTableDetailViewProps> = ({
-  table,
-  items,
-  inventory,
+  table: initialTable,
+  items: initialItems,
+  inventory: initialInventory,
   onBack,
   onRefresh,
   currencySymbol = '$',
 }) => {
+  const [currentTable, setCurrentTable] = useState<GiftTable>(initialTable);
+  const [currentItems, setCurrentItems] = useState<TableItem[]>(initialItems);
+  const [currentInventory, setCurrentInventory] = useState<Product[]>(initialInventory);
+
   const [copied, setCopied] = useState(false);
   const [isAddingMore, setIsAddingMore] = useState(false);
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
@@ -55,10 +60,29 @@ export const GiftTableDetailView: React.FC<GiftTableDetailViewProps> = ({
     isLoading: boolean;
   } | null>(null);
 
+  // Sincronización en tiempo real del detalle de la mesa
+  useEffect(() => {
+    setCurrentTable(initialTable);
+    setCurrentItems(initialItems);
+    setCurrentInventory(initialInventory);
+
+    const unsubscribe = subscribeToGiftTableDetail(initialTable.id, (liveData) => {
+      if (liveData.table) {
+        setCurrentTable(liveData.table);
+      }
+      setCurrentItems(liveData.items);
+      setCurrentInventory(liveData.inventory);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [initialTable.id]);
+
   const copyPublicLink = () => {
     const origin = typeof window !== 'undefined' ? window.location.origin : '';
     const basePath = typeof window !== 'undefined' ? window.location.pathname.replace(/\/$/, '') : '';
-    const fullUrl = `${origin}${basePath}/#mesa/${table.slug}`;
+    const fullUrl = `${origin}${basePath}/#mesa/${currentTable.slug}`;
     navigator.clipboard.writeText(fullUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
@@ -77,7 +101,7 @@ export const GiftTableDetailView: React.FC<GiftTableDetailViewProps> = ({
     if (!dropDialog) return;
     setDropDialog((prev) => (prev ? { ...prev, isLoading: true } : null));
     try {
-      await markItemAsDropped(table.id, dropDialog.itemId);
+      await markItemAsDropped(currentTable.id, dropDialog.itemId);
       onRefresh();
       setDropDialog(null);
     } catch (err) {
@@ -88,7 +112,7 @@ export const GiftTableDetailView: React.FC<GiftTableDetailViewProps> = ({
 
   const handleChangeStatus = async (itemId: string, newStatus: ItemStatus) => {
     try {
-      await updateTableItemStatus(table.id, itemId, newStatus);
+      await updateTableItemStatus(currentTable.id, itemId, newStatus);
       onRefresh();
     } catch (err) {
       console.error('Error al cambiar estado:', err);
@@ -99,8 +123,8 @@ export const GiftTableDetailView: React.FC<GiftTableDetailViewProps> = ({
     if (selectedProductIds.length === 0) return;
     setIsSubmitting(true);
     try {
-      const prodsToAdd = inventory.filter((p) => selectedProductIds.includes(p.id));
-      await addItemsToGiftTable(table.id, prodsToAdd);
+      const prodsToAdd = currentInventory.filter((p) => selectedProductIds.includes(p.id));
+      await addItemsToGiftTable(currentTable.id, prodsToAdd);
       setSelectedProductIds([]);
       setIsAddingMore(false);
       onRefresh();
@@ -112,14 +136,14 @@ export const GiftTableDetailView: React.FC<GiftTableDetailViewProps> = ({
   };
 
   // Metrics
-  const total = items.length;
-  const disponibles = items.filter((i) => i.status === 'disponible').length;
-  const reservados = items.filter((i) => i.status === 'reservado_en_tienda').length;
-  const seleccionados = items.filter((i) => i.status === 'seleccionado').length;
-  const pagados = items.filter((i) => i.status === 'pagado').length;
-  const dadosDeBaja = items.filter((i) => i.status === 'dado_de_baja').length;
+  const total = currentItems.length;
+  const disponibles = currentItems.filter((i) => i.status === 'disponible').length;
+  const reservados = currentItems.filter((i) => i.status === 'reservado_en_tienda').length;
+  const seleccionados = currentItems.filter((i) => i.status === 'seleccionado').length;
+  const pagados = currentItems.filter((i) => i.status === 'pagado').length;
+  const dadosDeBaja = currentItems.filter((i) => i.status === 'dado_de_baja').length;
 
-  const filteredItems = items.filter((item) => {
+  const filteredItems = currentItems.filter((item) => {
     if (statusFilter === 'all') return true;
     return item.status === statusFilter;
   });
@@ -188,7 +212,7 @@ export const GiftTableDetailView: React.FC<GiftTableDetailViewProps> = ({
             Actualizar
           </button>
           <a
-            href={`#mesa/${table.slug}`}
+            href={`#mesa/${currentTable.slug}`}
             target="_blank"
             rel="noreferrer"
             className="px-4 py-2 bg-white text-[#4A4E69] hover:bg-[#FAF7F2] rounded-xl border border-[#E2D9CF] text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs"
@@ -205,21 +229,21 @@ export const GiftTableDetailView: React.FC<GiftTableDetailViewProps> = ({
           <div>
             <div className="flex items-center gap-2 mb-1.5">
               <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-[#F7C8D0]/30 text-[#B85D6C]">
-                {table.babyName ? `Baby ${table.babyName}` : 'Mesa de Regalo'}
+                {currentTable.babyName ? `Baby ${currentTable.babyName}` : 'Mesa de Regalo'}
               </span>
               <span className="text-xs text-[#8C90A4] flex items-center gap-1">
                 <Calendar className="w-3.5 h-3.5 text-[#E6B875]" />
-                Fecha: {table.eventDate}
+                Fecha: {currentTable.eventDate}
               </span>
             </div>
 
             <h2 className="text-2xl sm:text-3xl font-heading font-bold text-[#4A4E69]">
-              {table.familyName}
+              {currentTable.familyName}
             </h2>
 
-            {table.greeting && (
+            {currentTable.greeting && (
               <p className="text-xs text-[#7C8097] mt-1.5 max-w-2xl italic">
-                "{table.greeting}"
+                "{currentTable.greeting}"
               </p>
             )}
           </div>
@@ -231,7 +255,7 @@ export const GiftTableDetailView: React.FC<GiftTableDetailViewProps> = ({
             </span>
             <div className="flex items-center gap-2">
               <span className="text-xs font-mono font-bold text-[#4A4E69] bg-white px-3 py-1.5 rounded-xl border border-[#E2D9CF] flex-1 truncate">
-                #mesa/{table.slug}
+                #mesa/{currentTable.slug}
               </span>
               <button
                 id="btn-copy-table-link"
@@ -333,7 +357,7 @@ export const GiftTableDetailView: React.FC<GiftTableDetailViewProps> = ({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 max-h-60 overflow-y-auto p-1">
-            {inventory.map((prod) => {
+            {currentInventory.map((prod) => {
               const isSelected = selectedProductIds.includes(prod.id);
               return (
                 <div

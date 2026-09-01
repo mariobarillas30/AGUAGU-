@@ -20,6 +20,10 @@ import {
   OFFICIAL_AGU_AGU_PRODUCTS,
   OFFICIAL_AGU_AGU_EXTRAS,
 } from '../data/aguAguCatalog';
+import {
+  deleteProductImagesFolder,
+  deleteImageFromStorageByUrl,
+} from './storageService';
 
 export enum OperationType {
   CREATE = 'create',
@@ -335,7 +339,7 @@ export async function updateProduct(id: string, product: Partial<Product>): Prom
   const docRef = doc(db, PRODUCTS_COLLECTION, id);
   await updateDoc(docRef, product);
 
-  // 1. Sincronización automática con Productos Extra (Detalles Especiales / Venta Cruzada)
+  // 1. Sincronización automática agrupada con Productos Extra (Detalles Especiales / Venta Cruzada)
   try {
     const fullProdSnap = await getDoc(docRef);
     const currentProd = fullProdSnap.exists() ? (fullProdSnap.data() as Product) : null;
@@ -346,6 +350,8 @@ export async function updateProduct(id: string, product: Partial<Product>): Prom
 
     const extrasColl = collection(db, EXTRA_PRODUCTS_COLLECTION);
     const extrasSnap = await getDocs(extrasColl);
+    const extrasBatch = writeBatch(db);
+    let extrasChanged = false;
 
     for (const extraDoc of extrasSnap.docs) {
       const extraData = extraDoc.data() as ExtraProduct;
@@ -362,17 +368,24 @@ export async function updateProduct(id: string, product: Partial<Product>): Prom
         if (finalImages && finalImages.length > 0) extraUpdate.images = finalImages;
         if (product.price && extraData.price === currentProd?.price) extraUpdate.price = product.price;
 
-        await updateDoc(doc(db, EXTRA_PRODUCTS_COLLECTION, extraDoc.id), extraUpdate);
+        extrasBatch.update(doc(db, EXTRA_PRODUCTS_COLLECTION, extraDoc.id), extraUpdate);
+        extrasChanged = true;
       }
+    }
+    if (extrasChanged) {
+      await extrasBatch.commit();
     }
   } catch (syncErr) {
     console.error('Error sincronizando producto extra:', syncErr);
   }
 
-  // 2. Sincronización automática con mesas de regalos activas
+  // 2. Sincronización automática agrupada con mesas de regalos activas mediante writeBatch
   try {
     const tablesColl = collection(db, GIFT_TABLES_COLLECTION);
     const tablesSnap = await getDocs(tablesColl);
+    const tablesBatch = writeBatch(db);
+    let tablesChanged = false;
+
     for (const tDoc of tablesSnap.docs) {
       const itemsColl = collection(db, GIFT_TABLES_COLLECTION, tDoc.id, TABLE_ITEMS_SUBCOLLECTION);
       const itemsSnap = await getDocs(itemsColl);
@@ -386,12 +399,16 @@ export async function updateProduct(id: string, product: Partial<Product>): Prom
           if (product.name) itemUpdate.name = product.name;
           if (product.description) itemUpdate.description = product.description;
 
-          await updateDoc(
+          tablesBatch.update(
             doc(db, GIFT_TABLES_COLLECTION, tDoc.id, TABLE_ITEMS_SUBCOLLECTION, iDoc.id),
             itemUpdate
           );
+          tablesChanged = true;
         }
       }
+    }
+    if (tablesChanged) {
+      await tablesBatch.commit();
     }
   } catch (tableSyncErr) {
     console.error('Error sincronizando items de mesas:', tableSyncErr);
@@ -399,8 +416,29 @@ export async function updateProduct(id: string, product: Partial<Product>): Prom
 }
 
 export async function deleteProduct(id: string): Promise<void> {
-  const docRef = doc(db, PRODUCTS_COLLECTION, id);
-  await deleteDoc(docRef);
+  try {
+    // 1. Obtener datos previos para identificar y limpiar fotos de Firebase Storage
+    const docRef = doc(db, PRODUCTS_COLLECTION, id);
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      const data = snap.data() as Product;
+      const imagesToDelete = data.images || (data.imageUrl ? [data.imageUrl] : []);
+      for (const imgUrl of imagesToDelete) {
+        deleteImageFromStorageByUrl(imgUrl).catch(() => {});
+      }
+    }
+
+    // 2. Limpiar carpeta completa en Storage por seguridad
+    await deleteProductImagesFolder(id, false).catch(() => {});
+
+    // 3. Eliminar documento de Firestore
+    await deleteDoc(docRef);
+  } catch (error) {
+    console.error('Error al eliminar producto y sus imágenes:', error);
+    // Fallback: intentar eliminar al menos el documento de Firestore
+    const docRef = doc(db, PRODUCTS_COLLECTION, id);
+    await deleteDoc(docRef);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -439,8 +477,23 @@ export async function updateExtraProduct(id: string, extra: Partial<ExtraProduct
 }
 
 export async function deleteExtraProduct(id: string): Promise<void> {
-  const docRef = doc(db, EXTRA_PRODUCTS_COLLECTION, id);
-  await deleteDoc(docRef);
+  try {
+    const docRef = doc(db, EXTRA_PRODUCTS_COLLECTION, id);
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      const data = snap.data() as ExtraProduct;
+      const imagesToDelete = data.images || (data.imageUrl ? [data.imageUrl] : []);
+      for (const imgUrl of imagesToDelete) {
+        deleteImageFromStorageByUrl(imgUrl).catch(() => {});
+      }
+    }
+    await deleteProductImagesFolder(id, true).catch(() => {});
+    await deleteDoc(docRef);
+  } catch (error) {
+    console.error('Error al eliminar producto extra:', error);
+    const docRef = doc(db, EXTRA_PRODUCTS_COLLECTION, id);
+    await deleteDoc(docRef);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -765,11 +818,16 @@ export async function reserveTableItemWithTransaction(
 
       transaction.update(itemDocRef, updatePayload);
 
-      // Si existe producto en inventario, decrementar stock atómicamente
+      // Si existe producto en inventario, decrementar stock atómicamente y registrar trazabilidad de reserva
       if (prodDocRef && currentProdStock !== null) {
         const nextQty = Math.max(0, currentProdStock - 1);
         transaction.update(prodDocRef, {
           quantity: nextQty,
+          lastReservation: {
+            tableId,
+            itemId,
+            timestamp: new Date().toISOString(),
+          },
         });
       }
     });
@@ -917,8 +975,8 @@ export function subscribeToGiftTableWithInventory(
     });
   };
 
-  // 1. Escuchar Configuración de tienda
-  unsubConfig = onSnapshot(doc(db, CONFIG_COLLECTION, 'store'), (snap) => {
+  // 1. Escuchar Configuración de tienda (documento store_settings)
+  unsubConfig = onSnapshot(doc(db, CONFIG_COLLECTION, STORE_CONFIG_DOC), (snap) => {
     if (snap.exists()) {
       liveConfig = snap.data() as StoreConfig;
       recomputeAndEmit();
@@ -992,6 +1050,180 @@ export function subscribeToGiftTableWithInventory(
     if (unsubProducts) unsubProducts();
     if (unsubExtras) unsubExtras();
     if (unsubConfig) unsubConfig();
+  };
+}
+
+/**
+ * Suscripción en tiempo real para el Panel Administrativo (AdminDashboard)
+ * Sincroniza Productos, Mesas de Regalos, Extras y Configuración en vivo.
+ */
+export function subscribeToAdminData(
+  onUpdate: (data: {
+    products: Product[];
+    tables: GiftTable[];
+    extras: ExtraProduct[];
+    storeConfig: StoreConfig;
+  }) => void
+): () => void {
+  let liveProducts: Product[] = [];
+  let liveTables: GiftTable[] = [];
+  let liveExtras: ExtraProduct[] = [];
+  let liveConfig: StoreConfig = DEFAULT_STORE_CONFIG;
+
+  const emit = () => {
+    onUpdate({
+      products: liveProducts,
+      tables: liveTables,
+      extras: liveExtras,
+      storeConfig: liveConfig,
+    });
+  };
+
+  const unsubProducts = onSnapshot(collection(db, PRODUCTS_COLLECTION), (snap) => {
+    liveProducts = snap.docs
+      .map((d) => ({ id: d.id, ...(d.data() as Product) }))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    emit();
+  }, (err) => {
+    console.warn('Listener error on products:', err);
+  });
+
+  const unsubTables = onSnapshot(collection(db, GIFT_TABLES_COLLECTION), async (snap) => {
+    const rawTables = snap.docs.map((d) => ({ id: d.id, ...d.data() } as GiftTable));
+    
+    // Obtener recuentos actualizados
+    const tablesWithCounts: GiftTable[] = await Promise.all(
+      rawTables.map(async (t) => {
+        try {
+          const itemsColl = collection(db, GIFT_TABLES_COLLECTION, t.id, TABLE_ITEMS_SUBCOLLECTION);
+          const itemsSnap = await getDocs(itemsColl);
+          const itemCount = itemsSnap.size;
+          const completedCount = itemsSnap.docs.filter((itemDoc) => {
+            const st = itemDoc.data().status;
+            return st === 'reservado_en_tienda' || st === 'seleccionado' || st === 'pagado';
+          }).length;
+          return { ...t, itemCount, completedCount };
+        } catch {
+          return t;
+        }
+      })
+    );
+
+    liveTables = tablesWithCounts.sort(
+      (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+    emit();
+  }, (err) => {
+    console.warn('Listener error on gift_tables:', err);
+  });
+
+  const unsubExtras = onSnapshot(collection(db, EXTRA_PRODUCTS_COLLECTION), (snap) => {
+    liveExtras = snap.docs.map((d) => ({ id: d.id, ...(d.data() as ExtraProduct) }));
+    emit();
+  }, (err) => {
+    console.warn('Listener error on extra_products:', err);
+  });
+
+  const unsubConfig = onSnapshot(doc(db, CONFIG_COLLECTION, STORE_CONFIG_DOC), (snap) => {
+    if (snap.exists()) {
+      liveConfig = snap.data() as StoreConfig;
+      emit();
+    }
+  }, (err) => {
+    console.warn('Listener error on store_settings:', err);
+  });
+
+  return () => {
+    unsubProducts();
+    unsubTables();
+    unsubExtras();
+    unsubConfig();
+  };
+}
+
+/**
+ * Suscripción en tiempo real para el Detalle de una Mesa en el Admin (GiftTableDetailView)
+ */
+export function subscribeToGiftTableDetail(
+  tableId: string,
+  onUpdate: (data: {
+    table: GiftTable | null;
+    items: TableItem[];
+    inventory: Product[];
+  }) => void
+): () => void {
+  let currentTable: GiftTable | null = null;
+  let rawItems: TableItem[] = [];
+  let liveProducts: Product[] = [];
+
+  const emit = () => {
+    // Cruzar items con inventario en tiempo real
+    const enrichedItems = rawItems.map((item) => {
+      const matched = liveProducts.find(
+        (p) =>
+          item.productId === p.id ||
+          areProductsMatching(p.name, item.name, p.description, item.description)
+      );
+      return {
+        ...item,
+        imageUrl: matched?.imageUrl || item.imageUrl,
+        images: matched?.images && matched.images.length > 0 ? matched.images : item.images,
+        price: matched?.price !== undefined ? matched.price : item.price,
+      };
+    });
+
+    if (currentTable) {
+      currentTable.itemCount = enrichedItems.length;
+      currentTable.completedCount = enrichedItems.filter(
+        (i) => i.status === 'reservado_en_tienda' || i.status === 'seleccionado' || i.status === 'pagado'
+      ).length;
+    }
+
+    onUpdate({
+      table: currentTable,
+      items: enrichedItems,
+      inventory: liveProducts,
+    });
+  };
+
+  const unsubTable = onSnapshot(doc(db, GIFT_TABLES_COLLECTION, tableId), (snap) => {
+    if (snap.exists()) {
+      currentTable = { id: snap.id, ...snap.data() } as GiftTable;
+      emit();
+    } else {
+      currentTable = null;
+      emit();
+    }
+  }, (err) => {
+    console.warn('Listener error on table detail:', err);
+  });
+
+  const unsubItems = onSnapshot(
+    collection(db, GIFT_TABLES_COLLECTION, tableId, TABLE_ITEMS_SUBCOLLECTION),
+    (snap) => {
+      rawItems = snap.docs.map((d) => ({
+        id: d.id,
+        tableId,
+        ...d.data(),
+      } as TableItem));
+      emit();
+    },
+    (err) => {
+      console.warn('Listener error on table items:', err);
+    }
+  );
+
+  const unsubProducts = onSnapshot(collection(db, PRODUCTS_COLLECTION), (snap) => {
+    liveProducts = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Product) }));
+    emit();
+  }, (err) => {
+    console.warn('Listener error on products in detail view:', err);
+  });
+
+  return () => {
+    unsubTable();
+    unsubItems();
+    unsubProducts();
   };
 }
 

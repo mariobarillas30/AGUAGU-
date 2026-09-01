@@ -36,6 +36,7 @@ import {
   seedInitialSampleDataIfEmpty,
   resetCatalogWithAguAguData,
   deleteGiftTable,
+  subscribeToAdminData,
 } from '../../services/dbService';
 import { ProductModal } from './ProductModal';
 import { CreateGiftTableModal } from './CreateGiftTableModal';
@@ -131,7 +132,26 @@ export const AdminDashboard: React.FC = () => {
   };
 
   useEffect(() => {
-    loadAllData();
+    // 1. Carga inicial / auto seed
+    seedInitialSampleDataIfEmpty().catch(() => {});
+
+    // 2. Suscripción reactiva en tiempo real a Firestore
+    const unsubscribe = subscribeToAdminData((liveData) => {
+      setProducts(liveData.products);
+      setTables(liveData.tables);
+      setExtraProducts(liveData.extras);
+      setStoreConfig(liveData.storeConfig);
+      
+      setWhatsappInput((prev) => prev || liveData.storeConfig.whatsappNumber || '50368687046');
+      setStoreNameInput((prev) => prev || liveData.storeConfig.storeName || 'Agu Agu - Artículos de Bebé');
+      setCurrencyInput((prev) => prev || liveData.storeConfig.currencySymbol || '$');
+      
+      setLoading(false);
+    });
+
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   const handleOpenTableDetail = async (tableId: string) => {

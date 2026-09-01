@@ -10,9 +10,15 @@ import {
   Palette,
   Eye,
   Upload,
-  FolderOpen,
+  Loader2,
+  CloudUpload,
 } from 'lucide-react';
 import { Product, ExtraProduct } from '../../types';
+import {
+  uploadProductImageToStorage,
+  deleteImageFromStorageByUrl,
+  dataUrlToBlob,
+} from '../../services/storageService';
 
 interface ProductModalProps {
   isOpen: boolean;
@@ -21,6 +27,13 @@ interface ProductModalProps {
   initialData?: Product | ExtraProduct | null;
   mode: 'inventory' | 'extra';
   currencySymbol?: string;
+}
+
+interface ImageItem {
+  id: string;
+  url: string; // URL remota existente o Blob URL local para preview
+  file?: File; // Archivo local nuevo pendiente de subida
+  isNew: boolean;
 }
 
 const CATEGORIES = [
@@ -53,11 +66,14 @@ export const ProductModal: React.FC<ProductModalProps> = ({
   const [badge, setBadge] = useState('Favorito');
 
   // Multi-image management state
-  const [imageList, setImageList] = useState<string[]>([]);
+  const [images, setImages] = useState<ImageItem[]>([]);
+  const [originalRemoteImages, setOriginalRemoteImages] = useState<string[]>([]);
   const [activeImageIndex, setActiveImageIndex] = useState<number>(0);
   const [newImageUrl, setNewImageUrl] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [uploadProgressText, setUploadProgressText] = useState('');
   const [isDragging, setIsDragging] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -68,15 +84,23 @@ export const ProductModal: React.FC<ProductModalProps> = ({
       setPrice(initialData.price || '');
 
       // Determine initial images list
-      let imgs: string[] = [];
+      let rawUrls: string[] = [];
       if (initialData.images && initialData.images.length > 0) {
-        imgs = [...initialData.images];
+        rawUrls = [...initialData.images];
       } else if (initialData.imageUrl) {
-        imgs = [initialData.imageUrl];
+        rawUrls = [initialData.imageUrl];
       } else {
-        imgs = [DEFAULT_FALLBACK_IMAGE];
+        rawUrls = [DEFAULT_FALLBACK_IMAGE];
       }
-      setImageList(imgs);
+
+      setOriginalRemoteImages(rawUrls);
+      setImages(
+        rawUrls.map((url, idx) => ({
+          id: `orig-${idx}-${Date.now()}`,
+          url,
+          isNew: false,
+        }))
+      );
       setActiveImageIndex(0);
 
       if (mode === 'inventory') {
@@ -91,11 +115,19 @@ export const ProductModal: React.FC<ProductModalProps> = ({
       setDescription('');
       setPrice('');
       setQuantity(10);
-      setImageList([DEFAULT_FALLBACK_IMAGE]);
+      setOriginalRemoteImages([]);
+      setImages([
+        {
+          id: `default-${Date.now()}`,
+          url: DEFAULT_FALLBACK_IMAGE,
+          isNew: false,
+        },
+      ]);
       setActiveImageIndex(0);
       setCategory('Habitación');
       setBadge('Favorito');
     }
+    setErrorMsg(null);
   }, [initialData, mode, isOpen]);
 
   if (!isOpen) return null;
@@ -103,57 +135,81 @@ export const ProductModal: React.FC<ProductModalProps> = ({
   // Process files from file picker or drag-drop
   const handleFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
+    setErrorMsg(null);
 
+    const newItems: ImageItem[] = [];
     Array.from(files).forEach((file) => {
-      if (!file.type.startsWith('image/')) return;
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const result = e.target?.result as string;
-        if (result) {
-          setImageList((prev) => {
-            // If the only image is the default placeholder, replace it
-            if (prev.length === 1 && prev[0] === DEFAULT_FALLBACK_IMAGE) {
-              return [result];
-            }
-            return [...prev, result];
-          });
-        }
-      };
-      reader.readAsDataURL(file);
+      if (!file.type.startsWith('image/')) {
+        setErrorMsg('Solo se permiten archivos de imagen (JPG, PNG, WebP).');
+        return;
+      }
+
+      const previewUrl = URL.createObjectURL(file);
+      newItems.push({
+        id: `file-${Date.now()}-${Math.random()}`,
+        url: previewUrl,
+        file,
+        isNew: true,
+      });
     });
+
+    if (newItems.length > 0) {
+      setImages((prev) => {
+        // If the only image is the default placeholder, replace it
+        if (prev.length === 1 && prev[0].url === DEFAULT_FALLBACK_IMAGE && !prev[0].file) {
+          return newItems;
+        }
+        return [...prev, ...newItems];
+      });
+    }
   };
 
   const handleAddImageUrl = () => {
     const trimmed = newImageUrl.trim();
     if (!trimmed) return;
+    setErrorMsg(null);
 
     const splitUrls = trimmed
       .split(/[\n,]+/)
       .map((u) => u.trim())
       .filter((u) => u.length > 0);
 
-    setImageList((prev) => {
-      if (prev.length === 1 && prev[0] === DEFAULT_FALLBACK_IMAGE) {
-        return [...splitUrls];
+    const urlItems: ImageItem[] = splitUrls.map((url, idx) => ({
+      id: `url-${Date.now()}-${idx}`,
+      url,
+      isNew: false,
+    }));
+
+    setImages((prev) => {
+      if (prev.length === 1 && prev[0].url === DEFAULT_FALLBACK_IMAGE && !prev[0].file) {
+        return urlItems;
       }
-      return [...prev, ...splitUrls];
+      return [...prev, ...urlItems];
     });
     setNewImageUrl('');
   };
 
   const handleRemoveImage = (indexToRemove: number) => {
-    setImageList((prev) => {
+    setImages((prev) => {
       const updated = prev.filter((_, idx) => idx !== indexToRemove);
-      return updated.length > 0 ? updated : [DEFAULT_FALLBACK_IMAGE];
+      return updated.length > 0
+        ? updated
+        : [
+            {
+              id: `fallback-${Date.now()}`,
+              url: DEFAULT_FALLBACK_IMAGE,
+              isNew: false,
+            },
+          ];
     });
-    if (activeImageIndex >= imageList.length - 1) {
-      setActiveImageIndex(Math.max(0, imageList.length - 2));
+    if (activeImageIndex >= images.length - 1) {
+      setActiveImageIndex(Math.max(0, images.length - 2));
     }
   };
 
   const handleSetPrimary = (index: number) => {
     if (index === 0) return;
-    setImageList((prev) => {
+    setImages((prev) => {
       const item = prev[index];
       const rest = prev.filter((_, idx) => idx !== index);
       return [item, ...rest];
@@ -165,19 +221,84 @@ export const ProductModal: React.FC<ProductModalProps> = ({
     e.preventDefault();
     if (!name.trim() || price === '') return;
 
-    const validImages = imageList.filter((img) => img.trim().length > 0);
-    const primaryImg = validImages[0] || DEFAULT_FALLBACK_IMAGE;
-
     setIsSaving(true);
+    setErrorMsg(null);
+    setUploadProgressText('Procesando imágenes...');
+
     try {
+      const targetProductId =
+        initialData?.id ||
+        `prod_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const isExtra = mode === 'extra';
+
+      // 1. Subir archivos nuevos a Firebase Storage
+      const finalUrls: string[] = [];
+      const newImagesToUpload = images.filter((img) => img.file || img.url.startsWith('data:image/'));
+      let uploadedCount = 0;
+
+      for (let i = 0; i < images.length; i++) {
+        const img = images[i];
+
+        if (img.file) {
+          // Archivo local nuevo seleccionado
+          uploadedCount++;
+          setUploadProgressText(
+            `Optimizando y subiendo fotografía ${uploadedCount} de ${newImagesToUpload.length} a Firebase Storage...`
+          );
+
+          const uploadedUrl = await uploadProductImageToStorage(
+            img.file,
+            targetProductId,
+            `${name}_${i + 1}`,
+            isExtra
+          );
+          finalUrls.push(uploadedUrl);
+        } else if (img.url.startsWith('data:image/')) {
+          // Base64 URL
+          uploadedCount++;
+          setUploadProgressText(
+            `Optimizando y subiendo fotografía ${uploadedCount} a Firebase Storage...`
+          );
+          const { blob } = dataUrlToBlob(img.url);
+          const uploadedUrl = await uploadProductImageToStorage(
+            blob,
+            targetProductId,
+            `${name}_${i + 1}`,
+            isExtra
+          );
+          finalUrls.push(uploadedUrl);
+        } else if (img.url.trim().length > 0) {
+          // URL remota preexistente (Firebase Storage o externa)
+          finalUrls.push(img.url.trim());
+        }
+      }
+
+      const validUrls = finalUrls.length > 0 ? finalUrls : [DEFAULT_FALLBACK_IMAGE];
+      const primaryUrl = validUrls[0];
+
+      // 2. Eliminar de Firebase Storage las fotografías que el usuario borró en la edición
+      if (originalRemoteImages.length > 0) {
+        const removedUrls = originalRemoteImages.filter(
+          (origUrl) => !validUrls.includes(origUrl)
+        );
+        // Borrado en segundo plano de archivos huérfanos
+        for (const remUrl of removedUrls) {
+          deleteImageFromStorageByUrl(remUrl).catch((delErr) =>
+            console.warn('Aviso borrando imagen huérfana de Storage:', delErr)
+          );
+        }
+      }
+
+      // 3. Guardar únicamente las URLs en Firestore
+      setUploadProgressText('Guardando información en Firestore...');
       if (mode === 'inventory') {
         await onSave({
           name: name.trim(),
           description: description.trim(),
           price: Number(price),
           quantity: Number(quantity) || 0,
-          imageUrl: primaryImg,
-          images: validImages,
+          imageUrl: primaryUrl,
+          images: validUrls,
           category,
         });
       } else {
@@ -185,16 +306,22 @@ export const ProductModal: React.FC<ProductModalProps> = ({
           name: name.trim(),
           description: description.trim(),
           price: Number(price),
-          imageUrl: primaryImg,
-          images: validImages,
+          imageUrl: primaryUrl,
+          images: validUrls,
           badge,
         });
       }
+
       onClose();
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      console.error('Error al guardar producto o subir a Storage:', err);
+      setErrorMsg(
+        err?.message ||
+          'Error al subir fotografías a Firebase Storage. Verifica la conexión.'
+      );
     } finally {
       setIsSaving(false);
+      setUploadProgressText('');
     }
   };
 
@@ -217,19 +344,32 @@ export const ProductModal: React.FC<ProductModalProps> = ({
               </h3>
               <p className="text-xs text-[#8C90A4]">
                 {mode === 'inventory'
-                  ? 'Gestiona especificaciones, fotos del producto y colores'
+                  ? 'Almacena datos en Firestore y fotografías en Firebase Storage'
                   : 'Producto complementario visible al final de las mesas'}
               </p>
             </div>
           </div>
           <button
             id="close-product-modal-btn"
+            type="button"
             onClick={onClose}
-            className="w-8 h-8 rounded-full bg-white border border-[#E8DFC8] text-[#8C90A4] hover:text-[#4A4E69] flex items-center justify-center transition-colors cursor-pointer"
+            disabled={isSaving}
+            className="w-8 h-8 rounded-full bg-white border border-[#E8DFC8] text-[#8C90A4] hover:text-[#4A4E69] flex items-center justify-center transition-colors cursor-pointer disabled:opacity-50"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
+
+        {/* Error Banner */}
+        {errorMsg && (
+          <div className="mx-6 mt-4 p-3.5 bg-red-50 border border-red-200 rounded-2xl text-xs text-red-700 flex items-start gap-2">
+            <X className="w-4 h-4 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">Error en la operación:</p>
+              <p>{errorMsg}</p>
+            </div>
+          </div>
+        )}
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
@@ -242,10 +382,11 @@ export const ProductModal: React.FC<ProductModalProps> = ({
               id="product-name-input"
               type="text"
               required
+              disabled={isSaving}
               placeholder="Ej: Cuna Corral 2 Niveles con Cambiador"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-4 py-2.5 rounded-xl border border-[#E2D9CF] bg-[#FAF7F2] text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
+              className="w-full px-4 py-2.5 rounded-xl border border-[#E2D9CF] bg-[#FAF7F2] text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA] disabled:opacity-50"
             />
           </div>
 
@@ -257,10 +398,11 @@ export const ProductModal: React.FC<ProductModalProps> = ({
             <textarea
               id="product-desc-input"
               rows={2}
+              disabled={isSaving}
               placeholder="Detalles sobre materiales, colores disponibles, funciones y edad recomendada..."
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className="w-full px-4 py-2.5 rounded-xl border border-[#E2D9CF] bg-[#FAF7F2] text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA] resize-none"
+              className="w-full px-4 py-2.5 rounded-xl border border-[#E2D9CF] bg-[#FAF7F2] text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA] resize-none disabled:opacity-50"
             />
           </div>
 
@@ -276,12 +418,13 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                 step="0.01"
                 min="0"
                 required
+                disabled={isSaving}
                 placeholder="Ej: 85.00"
                 value={price}
                 onChange={(e) =>
                   setPrice(e.target.value === '' ? '' : Number(e.target.value))
                 }
-                className="w-full px-4 py-2.5 rounded-xl border border-[#E2D9CF] bg-[#FAF7F2] text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
+                className="w-full px-4 py-2.5 rounded-xl border border-[#E2D9CF] bg-[#FAF7F2] text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA] disabled:opacity-50"
               />
             </div>
 
@@ -295,6 +438,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                   type="number"
                   min="0"
                   required
+                  disabled={isSaving}
                   placeholder="Ej: 10"
                   value={quantity}
                   onChange={(e) =>
@@ -302,7 +446,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                       e.target.value === '' ? '' : Number(e.target.value)
                     )
                   }
-                  className="w-full px-4 py-2.5 rounded-xl border border-[#E2D9CF] bg-[#FAF7F2] text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
+                  className="w-full px-4 py-2.5 rounded-xl border border-[#E2D9CF] bg-[#FAF7F2] text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA] disabled:opacity-50"
                 />
               </div>
             ) : (
@@ -313,8 +457,9 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                 <select
                   id="product-badge-select"
                   value={badge}
+                  disabled={isSaving}
                   onChange={(e) => setBadge(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl border border-[#E2D9CF] bg-[#FAF7F2] text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
+                  className="w-full px-4 py-2.5 rounded-xl border border-[#E2D9CF] bg-[#FAF7F2] text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA] disabled:opacity-50"
                 >
                   <option value="Favorito">⭐ Favorito para regalar</option>
                   <option value="Esencial">🍼 Esencial de recién nacido</option>
@@ -333,8 +478,9 @@ export const ProductModal: React.FC<ProductModalProps> = ({
               <select
                 id="product-category-select"
                 value={category}
+                disabled={isSaving}
                 onChange={(e) => setCategory(e.target.value)}
-                className="w-full px-4 py-2.5 rounded-xl border border-[#E2D9CF] bg-[#FAF7F2] text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
+                className="w-full px-4 py-2.5 rounded-xl border border-[#E2D9CF] bg-[#FAF7F2] text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA] disabled:opacity-50"
               >
                 {CATEGORIES.map((cat) => (
                   <option key={cat} value={cat}>
@@ -346,18 +492,18 @@ export const ProductModal: React.FC<ProductModalProps> = ({
           )}
 
           {/* ============================================================= */}
-          {/* MULTI-IMAGE MANAGEMENT (Fotos, Vistas y Colores) */}
+          {/* MULTI-IMAGE MANAGEMENT (Firebase Storage + Firestore URLs) */}
           {/* ============================================================= */}
           <div className="pt-3 border-t border-[#F2EAE0]">
             <div className="flex items-center justify-between mb-2.5">
               <div>
                 <label className="block text-xs font-bold text-[#4A4E69] flex items-center gap-1.5">
                   <Palette className="w-3.5 h-3.5 text-[#E58C8A]" />
-                  Fotos del Producto ({imageList.length}{' '}
-                  {imageList.length === 1 ? 'foto' : 'fotos'})
+                  Fotografías en Firebase Storage ({images.length}{' '}
+                  {images.length === 1 ? 'foto' : 'fotos'})
                 </label>
                 <span className="text-[11px] text-[#8C90A4]">
-                  Sube fotos desde tu dispositivo o agrega enlaces web
+                  Las fotos se optimizan y guardan en Storage; Firestore solo guarda sus URLs.
                 </span>
               </div>
             </div>
@@ -368,7 +514,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
               <div className="sm:col-span-1">
                 <div className="relative aspect-square rounded-xl overflow-hidden border-2 border-[#E58C8A] bg-white shadow-2xs">
                   <img
-                    src={imageList[activeImageIndex] || imageList[0]}
+                    src={images[activeImageIndex]?.url || images[0]?.url || DEFAULT_FALLBACK_IMAGE}
                     alt="Vista previa"
                     className="w-full h-full object-cover"
                   />
@@ -378,7 +524,12 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                   </div>
                   {activeImageIndex === 0 && (
                     <div className="absolute bottom-1.5 inset-x-1.5 bg-[#E58C8A] text-white text-[10px] font-bold py-0.5 text-center rounded-md">
-                      ★ Foto Portada Principal
+                      ★ Portada Principal
+                    </div>
+                  )}
+                  {images[activeImageIndex]?.isNew && (
+                    <div className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded bg-blue-600 text-white text-[9px] font-bold">
+                      Pendiente Storage
                     </div>
                   )}
                 </div>
@@ -387,9 +538,9 @@ export const ProductModal: React.FC<ProductModalProps> = ({
               {/* Thumbnails list with management controls */}
               <div className="sm:col-span-2 flex flex-col justify-between">
                 <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-40 overflow-y-auto p-1">
-                  {imageList.map((url, idx) => (
+                  {images.map((imgItem, idx) => (
                     <div
-                      key={idx}
+                      key={imgItem.id}
                       onClick={() => setActiveImageIndex(idx)}
                       className={`relative aspect-square rounded-xl overflow-hidden border-2 cursor-pointer transition-all group ${
                         activeImageIndex === idx
@@ -398,13 +549,13 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                       }`}
                     >
                       <img
-                        src={url}
+                        src={imgItem.url}
                         alt={`Foto ${idx + 1}`}
                         className="w-full h-full object-cover"
                       />
                       {idx === 0 && (
                         <div
-                          className="absolute top-1 left-1 bg-[#E58C8A] text-white rounded-full p-0.5"
+                          className="absolute top-1 left-1 bg-[#E58C8A] text-white rounded-full p-0.5 shadow-xs"
                           title="Foto Principal"
                         >
                           <Star className="w-2.5 h-2.5 fill-white" />
@@ -412,7 +563,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                       )}
 
                       {/* Action hover buttons */}
-                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1">
+                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1">
                         {idx !== 0 && (
                           <button
                             type="button"
@@ -463,12 +614,12 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                 setIsDragging(false);
                 handleFiles(e.dataTransfer.files);
               }}
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => !isSaving && fileInputRef.current?.click()}
               className={`border-2 border-dashed rounded-2xl p-4 text-center cursor-pointer transition-all mb-3 ${
                 isDragging
                   ? 'border-[#FF8B8B] bg-[#FFF0F0]'
                   : 'border-[#E2D9CF] bg-[#FAF7F2] hover:border-[#FF8B8B] hover:bg-white'
-              }`}
+              } ${isSaving ? 'opacity-50 pointer-events-none' : ''}`}
             >
               <input
                 ref={fileInputRef}
@@ -476,6 +627,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                 multiple
                 accept="image/*"
                 className="hidden"
+                disabled={isSaving}
                 onChange={(e) => handleFiles(e.target.files)}
               />
               <div className="flex flex-col items-center justify-center gap-1.5">
@@ -486,7 +638,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                   Haz clic para subir fotos desde tu dispositivo o arrástralas aquí
                 </p>
                 <p className="text-[10px] text-[#8C90A4]">
-                  Formatos soportados: JPG, PNG, WEBP (puedes seleccionar varias a la vez)
+                  Se optimizarán automáticamente (WebP/JPEG) y subirán a Firebase Storage
                 </p>
               </div>
             </div>
@@ -498,6 +650,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                 <input
                   id="product-new-image-url-input"
                   type="url"
+                  disabled={isSaving}
                   placeholder="O pega una URL de imagen (https://...)"
                   value={newImageUrl}
                   onChange={(e) => setNewImageUrl(e.target.value)}
@@ -507,14 +660,14 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                       handleAddImageUrl();
                     }
                   }}
-                  className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-[#E2D9CF] bg-[#FAF7F2] text-xs text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
+                  className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-[#E2D9CF] bg-[#FAF7F2] text-xs text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA] disabled:opacity-50"
                 />
               </div>
               <button
                 type="button"
                 id="btn-add-image-url"
                 onClick={handleAddImageUrl}
-                disabled={!newImageUrl.trim()}
+                disabled={isSaving || !newImageUrl.trim()}
                 className="px-4 py-2.5 rounded-xl bg-[#FAF7F2] border border-[#E2D9CF] text-[#4A4E69] hover:bg-[#E58C8A] hover:text-white hover:border-[#E58C8A] text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
               >
                 <Plus className="w-3.5 h-3.5" />
@@ -523,25 +676,48 @@ export const ProductModal: React.FC<ProductModalProps> = ({
             </div>
           </div>
 
-          {/* Action Buttons */}
-          <div className="pt-4 border-t border-[#F2EAE0] flex items-center justify-end gap-3">
-            <button
-              type="button"
-              id="cancel-product-modal-btn"
-              onClick={onClose}
-              className="px-5 py-2.5 rounded-xl border border-[#E2D9CF] text-[#6C7086] text-xs font-bold hover:bg-[#FAF7F2] transition-colors cursor-pointer"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              id="save-product-modal-btn"
-              disabled={isSaving || !name.trim() || price === ''}
-              className="px-6 py-2.5 rounded-xl bg-[#E58C8A] text-white text-xs font-bold hover:bg-[#d67b79] transition-all flex items-center gap-2 shadow-sm cursor-pointer disabled:opacity-50 active:scale-95"
-            >
-              <Check className="w-4 h-4" />
-              {isSaving ? 'Guardando...' : 'Guardar Producto'}
-            </button>
+          {/* Action Buttons & Progress state */}
+          <div className="pt-4 border-t border-[#F2EAE0] flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="text-xs text-[#6C7086] flex items-center gap-2">
+              {isSaving && (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-[#E58C8A]" />
+                  <span className="font-semibold text-[#E58C8A]">
+                    {uploadProgressText || 'Guardando cambios...'}
+                  </span>
+                </>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+              <button
+                type="button"
+                id="cancel-product-modal-btn"
+                onClick={onClose}
+                disabled={isSaving}
+                className="px-5 py-2.5 rounded-xl border border-[#E2D9CF] text-[#6C7086] text-xs font-bold hover:bg-[#FAF7F2] transition-colors cursor-pointer disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                id="save-product-modal-btn"
+                disabled={isSaving || !name.trim() || price === ''}
+                className="px-6 py-2.5 rounded-xl bg-[#E58C8A] text-white text-xs font-bold hover:bg-[#d67b79] transition-all flex items-center gap-2 shadow-sm cursor-pointer disabled:opacity-50 active:scale-95"
+              >
+                {isSaving ? (
+                  <>
+                    <CloudUpload className="w-4 h-4 animate-pulse" />
+                    <span>Guardando...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    <span>Guardar Producto</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </form>
       </div>
