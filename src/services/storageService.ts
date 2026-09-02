@@ -609,17 +609,20 @@ export async function uploadProductImageToStorage(
  * Elimina una imagen de Firebase Storage a partir de su URL pública
  */
 export async function deleteImageFromStorageByUrl(url: string): Promise<void> {
-  if (!isFirebaseStorageUrl(url)) {
-    // Si es una URL externa (Unsplash, etc.), no hace nada
+  if (!url || !isFirebaseStorageUrl(url)) {
+    // Si es una URL externa (Unsplash, dataUrl, etc.), no hace nada
     return;
   }
 
   try {
     const fileRef = ref(storage, url);
-    await deleteObject(fileRef);
+    await Promise.race([
+      deleteObject(fileRef),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT_DELETE')), 2000)),
+    ]);
   } catch (error: any) {
-    // Si el objeto ya no existía (404 / object-not-found), no es un error crítico
-    if (error?.code !== 'storage/object-not-found') {
+    // Si el objeto ya no existía o Storage no responde, continuar sin bloquear
+    if (error?.code !== 'storage/object-not-found' && error?.message !== 'TIMEOUT_DELETE') {
       console.warn('Aviso al eliminar imagen de Firebase Storage:', error);
     }
   }
@@ -627,7 +630,7 @@ export async function deleteImageFromStorageByUrl(url: string): Promise<void> {
 
 /**
  * Elimina todos los archivos contenidos en la carpeta de un producto en Firebase Storage
- * Evita la acumulación de archivos huérfanos.
+ * Evita la acumulación de archivos huérfanos con protección estricta contra timeouts.
  */
 export async function deleteProductImagesFolder(
   productId: string,
@@ -637,19 +640,23 @@ export async function deleteProductImagesFolder(
   const folderRef = ref(storage, `${folder}/${productId}`);
 
   try {
-    const res = await listAll(folderRef);
-    const deletePromises = res.items.map((itemRef) =>
-      deleteObject(itemRef).catch((err) => {
-        if (err?.code !== 'storage/object-not-found') {
-          console.warn('Error eliminando item de Storage:', err);
-        }
-      })
+    const listPromise = listAll(folderRef);
+    const timeoutPromise = new Promise<any>((_, reject) =>
+      setTimeout(() => reject(new Error('TIMEOUT_LIST_STORAGE')), 2000)
+    );
+
+    const res = await Promise.race([listPromise, timeoutPromise]);
+    if (!res || !res.items || res.items.length === 0) return;
+
+    const deletePromises = res.items.map((itemRef: any) =>
+      Promise.race([
+        deleteObject(itemRef),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT_DELETE_ITEM')), 1500)),
+      ]).catch(() => {})
     );
     await Promise.all(deletePromises);
   } catch (error: any) {
-    if (error?.code !== 'storage/object-not-found') {
-      console.warn('Aviso al listar carpeta de Storage para eliminar:', error);
-    }
+    // Si el bucket no está activo o se agota el timeout, salir limpiamente
   }
 }
 

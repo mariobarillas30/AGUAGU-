@@ -403,29 +403,14 @@ export async function updateProduct(id: string, product: Partial<Product>): Prom
 }
 
 export async function deleteProduct(id: string): Promise<void> {
-  try {
-    // 1. Obtener datos previos para identificar y limpiar fotos de Firebase Storage
-    const docRef = doc(db, PRODUCTS_COLLECTION, id);
-    const snap = await getDoc(docRef);
-    if (snap.exists()) {
-      const data = snap.data() as Product;
-      const imagesToDelete = data.images || (data.imageUrl ? [data.imageUrl] : []);
-      for (const imgUrl of imagesToDelete) {
-        deleteImageFromStorageByUrl(imgUrl).catch(() => {});
-      }
-    }
+  const docRef = doc(db, PRODUCTS_COLLECTION, id);
 
-    // 2. Limpiar carpeta completa en Storage por seguridad
-    await deleteProductImagesFolder(id, false).catch(() => {});
+  // 1. Eliminar PRIMERO e inmediatamente el documento en Firestore
+  // para que la interfaz y la base de datos se actualicen sin demora
+  await deleteDoc(docRef);
 
-    // 3. Eliminar documento de Firestore
-    await deleteDoc(docRef);
-  } catch (error) {
-    console.error('Error al eliminar producto y sus imágenes:', error);
-    // Fallback: intentar eliminar al menos el documento de Firestore
-    const docRef = doc(db, PRODUCTS_COLLECTION, id);
-    await deleteDoc(docRef);
-  }
+  // 2. Limpieza de imágenes en Firebase Storage en segundo plano (no bloqueante)
+  deleteProductImagesFolder(id, false).catch(() => {});
 }
 
 // -----------------------------------------------------------------------------
@@ -433,8 +418,8 @@ export async function deleteProduct(id: string): Promise<void> {
 // -----------------------------------------------------------------------------
 export async function getExtraProducts(): Promise<ExtraProduct[]> {
   try {
-    // Sincronizar automáticamente con inventario por si hubo cambios recientes
-    await syncAllExtrasWithInventory();
+    // Sincronizar automáticamente con inventario en segundo plano
+    syncAllExtrasWithInventory().catch(() => {});
 
     const coll = collection(db, EXTRA_PRODUCTS_COLLECTION);
     const snap = await getDocs(coll);
@@ -464,23 +449,13 @@ export async function updateExtraProduct(id: string, extra: Partial<ExtraProduct
 }
 
 export async function deleteExtraProduct(id: string): Promise<void> {
-  try {
-    const docRef = doc(db, EXTRA_PRODUCTS_COLLECTION, id);
-    const snap = await getDoc(docRef);
-    if (snap.exists()) {
-      const data = snap.data() as ExtraProduct;
-      const imagesToDelete = data.images || (data.imageUrl ? [data.imageUrl] : []);
-      for (const imgUrl of imagesToDelete) {
-        deleteImageFromStorageByUrl(imgUrl).catch(() => {});
-      }
-    }
-    await deleteProductImagesFolder(id, true).catch(() => {});
-    await deleteDoc(docRef);
-  } catch (error) {
-    console.error('Error al eliminar producto extra:', error);
-    const docRef = doc(db, EXTRA_PRODUCTS_COLLECTION, id);
-    await deleteDoc(docRef);
-  }
+  const docRef = doc(db, EXTRA_PRODUCTS_COLLECTION, id);
+
+  // 1. Eliminar de Firestore inmediatamente
+  await deleteDoc(docRef);
+
+  // 2. Limpieza en segundo plano de Storage
+  deleteProductImagesFolder(id, true).catch(() => {});
 }
 
 // -----------------------------------------------------------------------------
@@ -488,8 +463,8 @@ export async function deleteExtraProduct(id: string): Promise<void> {
 // -----------------------------------------------------------------------------
 export async function getGiftTables(): Promise<GiftTable[]> {
   try {
-    // Sincronizar automáticamente mesas con inventario
-    await syncAllTablesWithInventory();
+    // Sincronizar automáticamente mesas con inventario en segundo plano
+    syncAllTablesWithInventory().catch(() => {});
 
     const coll = collection(db, GIFT_TABLES_COLLECTION);
     const snap = await getDocs(coll);

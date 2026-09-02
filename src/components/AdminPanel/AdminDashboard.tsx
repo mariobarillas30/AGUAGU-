@@ -196,15 +196,16 @@ export const AdminDashboard: React.FC = () => {
         setConfirmDialog((prev) => (prev ? { ...prev, isLoading: true } : null));
         try {
           await deleteGiftTable(tableId);
+          setTables((prev) => prev.filter((t) => t.id !== tableId));
           if (selectedTableData?.table.id === tableId) {
             setSelectedTableData(null);
           }
-          await loadAllData();
+          setConfirmDialog(null);
           showToast(`Mesa de "${familyName}" eliminada correctamente`);
-        } catch (err) {
+          loadAllData().catch(() => {});
+        } catch (err: any) {
           console.error(err);
-          showToast('Error al eliminar la mesa', 'info');
-        } finally {
+          showToast(`Error al eliminar la mesa: ${err?.message || 'Error'}`, 'info');
           setConfirmDialog(null);
         }
       },
@@ -245,12 +246,16 @@ export const AdminDashboard: React.FC = () => {
         setConfirmDialog((prev) => (prev ? { ...prev, isLoading: true } : null));
         try {
           await deleteProduct(id);
-          await loadAllData();
+          // Actualización optimista inmediata en la interfaz
+          setProducts((prev) => prev.filter((p) => p.id !== id));
+          // Cerrar diálogo inmediatamente
+          setConfirmDialog(null);
           showToast(`Producto "${name}" eliminado exitosamente`);
-        } catch (err) {
+          // Recargar datos en segundo plano
+          loadAllData().catch(() => {});
+        } catch (err: any) {
           console.error('Error al eliminar producto:', err);
-          showToast('Error al eliminar el producto', 'info');
-        } finally {
+          showToast(`Error al eliminar: ${err?.message || 'Error'}`, 'info');
           setConfirmDialog(null);
         }
       },
@@ -269,12 +274,13 @@ export const AdminDashboard: React.FC = () => {
         setConfirmDialog((prev) => (prev ? { ...prev, isLoading: true } : null));
         try {
           await deleteExtraProduct(id);
-          await loadAllData();
+          setExtraProducts((prev) => prev.filter((p) => p.id !== id));
+          setConfirmDialog(null);
           showToast(`Producto extra "${name}" eliminado`);
-        } catch (err) {
+          loadAllData().catch(() => {});
+        } catch (err: any) {
           console.error('Error al eliminar producto extra:', err);
-          showToast('Error al eliminar producto extra', 'info');
-        } finally {
+          showToast(`Error al eliminar: ${err?.message || 'Error'}`, 'info');
           setConfirmDialog(null);
         }
       },
