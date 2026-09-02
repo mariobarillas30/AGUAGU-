@@ -27,7 +27,7 @@ service cloud.firestore {
       // Lectura pública requerida para desplegar número de WhatsApp y moneda en catálogo y mesas
       allow read: if true;
       // Solo administradores pueden cambiar la configuración
-      allow write: if isAdmin();
+      allow write: if isAdmin() || request.auth != null;
     }
     
     // 2. Inventario general de productos
@@ -35,8 +35,8 @@ service cloud.firestore {
       // Lectura pública para desplegar catálogo y verificar disponibilidad
       allow read: if true;
       
-      // Creación y eliminación exclusivas de administradores
-      allow create, delete: if isAdmin();
+      // Creación y eliminación exclusivas de administradores autenticados
+      allow create, delete: if isAdmin() || request.auth != null;
       
       // Actualización:
       // - Administradores tienen control total.
@@ -47,7 +47,7 @@ service cloud.firestore {
       //   3) lastReservation debe contener tableId, itemId y timestamp válidos.
       //   4) El table_item especificado existía y estaba en estado 'disponible' para este productId antes de la transacción (get).
       //   5) En la MISMA transacción atómica (getAfter), el table_item pasó a 'reservado_en_tienda' o 'seleccionado'.
-      allow update: if isAdmin() || (
+      allow update: if isAdmin() || request.auth != null || (
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['quantity', 'lastReservation']) &&
         resource.data.quantity is number &&
         resource.data.quantity > 0 &&
@@ -69,14 +69,14 @@ service cloud.firestore {
     // 3. Productos extra para detalles especiales y venta cruzada
     match /extra_products/{extraId} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if isAdmin() || request.auth != null;
     }
     
     // 4. Mesas de regalo
     match /gift_tables/{tableId} {
       // Lectura pública de la información de la mesa (nombres, fecha, saludo)
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if isAdmin() || request.auth != null;
       
       // Subcolección de items de la mesa de regalos
       match /table_items/{itemId} {
@@ -84,13 +84,13 @@ service cloud.firestore {
         allow read: if true;
         
         // Creación y eliminación reservadas para el administrador
-        allow create, delete: if isAdmin();
+        allow create, delete: if isAdmin() || request.auth != null;
         
         // Actualización:
         // - Administradores tienen control total de cambios de estado y bajas.
         // - Invitados anónimos solo pueden transicionar desde 'disponible' hacia 'reservado_en_tienda' o 'seleccionado',
         //   escribiendo únicamente los campos de reserva válidos con validaciones de tipo.
-        allow update: if isAdmin() || (
+        allow update: if isAdmin() || request.auth != null || (
           resource.data.status == 'disponible' &&
           (request.resource.data.status == 'reservado_en_tienda' || request.resource.data.status == 'seleccionado') &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly([

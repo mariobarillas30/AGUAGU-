@@ -34,6 +34,8 @@ interface ImageItem {
   url: string; // URL remota existente o Blob URL local para preview
   file?: File; // Archivo local nuevo pendiente de subida
   isNew: boolean;
+  status?: 'pending' | 'uploading' | 'completed' | 'error';
+  progressPercent?: number;
 }
 
 const CATEGORIES = [
@@ -139,17 +141,34 @@ export const ProductModal: React.FC<ProductModalProps> = ({
 
     const newItems: ImageItem[] = [];
     Array.from(files).forEach((file) => {
-      if (!file.type.startsWith('image/')) {
-        setErrorMsg('Solo se permiten archivos de imagen (JPG, PNG, WebP).');
+      console.log('[PRODUCT IMAGE] Seleccionada:', {
+        name: file.name,
+        size: file.size,
+        type: file.type,
+      });
+
+      const isImage =
+        (file.type && file.type.startsWith('image/')) ||
+        /\.(jpe?g|png|webp|avif|gif|bmp|svg|heic)$/i.test(file.name);
+
+      if (!isImage) {
+        setErrorMsg(`"${file.name}" no es un archivo de imagen compatible (JPG, PNG, WebP, AVIF).`);
+        return;
+      }
+
+      if (file.size > 30 * 1024 * 1024) {
+        setErrorMsg(`La imagen ${file.name} supera el tamaño máximo permitido de 30MB.`);
         return;
       }
 
       const previewUrl = URL.createObjectURL(file);
       newItems.push({
-        id: `file-${Date.now()}-${Math.random()}`,
+        id: `file-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
         url: previewUrl,
         file,
         isNew: true,
+        status: 'pending',
+        progressPercent: 0,
       });
     });
 
@@ -161,6 +180,23 @@ export const ProductModal: React.FC<ProductModalProps> = ({
         }
         return [...prev, ...newItems];
       });
+    }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const files: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) {
+        const file = items[i].getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (files.length > 0) {
+      const dataTransfer = new DataTransfer();
+      files.forEach((f) => dataTransfer.items.add(f));
+      handleFiles(dataTransfer.files);
     }
   };
 
@@ -223,7 +259,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
 
     setIsSaving(true);
     setErrorMsg(null);
-    setUploadProgressText('Procesando imágenes...');
+    setUploadProgressText('Iniciando procesamiento...');
 
     try {
       const targetProductId =
@@ -240,33 +276,88 @@ export const ProductModal: React.FC<ProductModalProps> = ({
         const img = images[i];
 
         if (img.file) {
-          // Archivo local nuevo seleccionado
           uploadedCount++;
-          setUploadProgressText(
-            `Optimizando y subiendo fotografía ${uploadedCount} de ${newImagesToUpload.length} a Firebase Storage...`
+          // Marcar en UI como en subida
+          setImages((prev) =>
+            prev.map((item, idx) =>
+              idx === i ? { ...item, status: 'uploading', progressPercent: 10 } : item
+            )
           );
 
           const uploadedUrl = await uploadProductImageToStorage(
             img.file,
             targetProductId,
             `${name}_${i + 1}`,
-            isExtra
+            isExtra,
+            (progress) => {
+              setUploadProgressText(
+                `Fotografía ${uploadedCount} de ${newImagesToUpload.length}: ${progress.message}`
+              );
+              setImages((prev) =>
+                prev.map((item, idx) =>
+                  idx === i ? { ...item, progressPercent: progress.percent } : item
+                )
+              );
+            }
           );
+
           finalUrls.push(uploadedUrl);
-        } else if (img.url.startsWith('data:image/')) {
-          // Base64 URL
-          uploadedCount++;
-          setUploadProgressText(
-            `Optimizando y subiendo fotografía ${uploadedCount} a Firebase Storage...`
+
+          // Actualizar estado del ítem a completado y con su URL definitiva de Firebase Storage
+          setImages((prev) =>
+            prev.map((item, idx) =>
+              idx === i
+                ? {
+                    ...item,
+                    url: uploadedUrl,
+                    isNew: false,
+                    status: 'completed',
+                    progressPercent: 100,
+                  }
+                : item
+            )
           );
+        } else if (img.url.startsWith('data:image/')) {
+          uploadedCount++;
+          setImages((prev) =>
+            prev.map((item, idx) =>
+              idx === i ? { ...item, status: 'uploading', progressPercent: 10 } : item
+            )
+          );
+
           const { blob } = dataUrlToBlob(img.url);
           const uploadedUrl = await uploadProductImageToStorage(
             blob,
             targetProductId,
             `${name}_${i + 1}`,
-            isExtra
+            isExtra,
+            (progress) => {
+              setUploadProgressText(
+                `Fotografía ${uploadedCount} de ${newImagesToUpload.length}: ${progress.message}`
+              );
+              setImages((prev) =>
+                prev.map((item, idx) =>
+                  idx === i ? { ...item, progressPercent: progress.percent } : item
+                )
+              );
+            }
           );
+
           finalUrls.push(uploadedUrl);
+
+          setImages((prev) =>
+            prev.map((item, idx) =>
+              idx === i
+                ? {
+                    ...item,
+                    url: uploadedUrl,
+                    isNew: false,
+                    status: 'completed',
+                    progressPercent: 100,
+                  }
+                : item
+            )
+          );
         } else if (img.url.trim().length > 0) {
           // URL remota preexistente (Firebase Storage o externa)
           finalUrls.push(img.url.trim());
@@ -289,8 +380,10 @@ export const ProductModal: React.FC<ProductModalProps> = ({
         }
       }
 
-      // 3. Guardar únicamente las URLs en Firestore
-      setUploadProgressText('Guardando información en Firestore...');
+      // 3. Guardar en Firestore una vez que todas las imágenes están subidas y con URL confirmada
+      setUploadProgressText('Guardando información del producto en Firestore...');
+      console.log('[PRODUCT IMAGE] Guardando producto en Firestore...');
+
       if (mode === 'inventory') {
         await onSave({
           name: name.trim(),
@@ -312,21 +405,36 @@ export const ProductModal: React.FC<ProductModalProps> = ({
         });
       }
 
+      console.log('[PRODUCT IMAGE] Producto guardado en Firestore');
+      console.log('[PRODUCT IMAGE] Proceso completado exitosamente');
+
+      // Cerrar el modal únicamente después de confirmar que Firestore guardó el producto
       onClose();
     } catch (err: any) {
-      console.error('Error al guardar producto o subir a Storage:', err);
+      console.error('[PRODUCT IMAGE ERROR] Error al procesar producto:', err);
       setErrorMsg(
         err?.message ||
-          'Error al subir fotografías a Firebase Storage. Verifica la conexión.'
+          'Error al subir fotografías a Firebase Storage o guardar en Firestore. Verifica tu conexión.'
+      );
+
+      // Marcar los ítems en fallo para retroalimentación visual
+      setImages((prev) =>
+        prev.map((item) =>
+          item.status === 'uploading' ? { ...item, status: 'error' } : item
+        )
       );
     } finally {
+      // Garantizar SIEMPRE que isSaving se restablece a false
       setIsSaving(false);
       setUploadProgressText('');
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+    <div
+      onPaste={handlePaste}
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
+    >
       <div className="bg-white w-full max-w-2xl rounded-3xl border border-[#F2EAE0] shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 my-8">
         {/* Header */}
         <div className="px-6 py-5 bg-[#FAF7F2] border-b border-[#F2EAE0] flex items-center justify-between">
@@ -528,8 +636,24 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                     </div>
                   )}
                   {images[activeImageIndex]?.isNew && (
-                    <div className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded bg-blue-600 text-white text-[9px] font-bold">
-                      Pendiente Storage
+                    <div
+                      className={`absolute top-1.5 right-1.5 px-2 py-0.5 rounded text-white text-[9px] font-bold shadow-xs ${
+                        images[activeImageIndex]?.status === 'uploading'
+                          ? 'bg-amber-500 animate-pulse'
+                          : images[activeImageIndex]?.status === 'error'
+                          ? 'bg-red-600'
+                          : images[activeImageIndex]?.status === 'completed'
+                          ? 'bg-emerald-600'
+                          : 'bg-blue-600'
+                      }`}
+                    >
+                      {images[activeImageIndex]?.status === 'uploading'
+                        ? `Subiendo ${images[activeImageIndex]?.progressPercent || 0}%`
+                        : images[activeImageIndex]?.status === 'error'
+                        ? 'Error al subir'
+                        : images[activeImageIndex]?.status === 'completed'
+                        ? '✓ En Storage'
+                        : 'Pendiente Storage'}
                     </div>
                   )}
                 </div>
@@ -555,10 +679,32 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                       />
                       {idx === 0 && (
                         <div
-                          className="absolute top-1 left-1 bg-[#E58C8A] text-white rounded-full p-0.5 shadow-xs"
+                          className="absolute top-1 left-1 bg-[#E58C8A] text-white rounded-full p-0.5 shadow-xs z-10"
                           title="Foto Principal"
                         >
                           <Star className="w-2.5 h-2.5 fill-white" />
+                        </div>
+                      )}
+
+                      {imgItem.isNew && (
+                        <div
+                          className={`absolute bottom-1 right-1 text-white text-[8px] font-bold px-1 rounded shadow-2xs z-10 ${
+                            imgItem.status === 'uploading'
+                              ? 'bg-amber-500 animate-pulse'
+                              : imgItem.status === 'completed'
+                              ? 'bg-emerald-600'
+                              : imgItem.status === 'error'
+                              ? 'bg-red-600'
+                              : 'bg-blue-600'
+                          }`}
+                        >
+                          {imgItem.status === 'uploading'
+                            ? `${imgItem.progressPercent || 0}%`
+                            : imgItem.status === 'completed'
+                            ? '✓'
+                            : imgItem.status === 'error'
+                            ? '!'
+                            : 'Pendiente'}
                         </div>
                       )}
 
@@ -615,7 +761,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                 handleFiles(e.dataTransfer.files);
               }}
               onClick={() => !isSaving && fileInputRef.current?.click()}
-              className={`border-2 border-dashed rounded-2xl p-4 text-center cursor-pointer transition-all mb-3 ${
+              className={`border-2 border-dashed rounded-2xl p-5 text-center cursor-pointer transition-all mb-3 ${
                 isDragging
                   ? 'border-[#FF8B8B] bg-[#FFF0F0]'
                   : 'border-[#E2D9CF] bg-[#FAF7F2] hover:border-[#FF8B8B] hover:bg-white'
@@ -625,21 +771,38 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                 ref={fileInputRef}
                 type="file"
                 multiple
-                accept="image/*"
+                accept="image/*,.jpg,.jpeg,.png,.webp,.avif,.gif,.heic"
                 className="hidden"
                 disabled={isSaving}
-                onChange={(e) => handleFiles(e.target.files)}
+                onChange={(e) => {
+                  handleFiles(e.target.files);
+                  e.target.value = '';
+                }}
               />
-              <div className="flex flex-col items-center justify-center gap-1.5">
-                <div className="w-8 h-8 rounded-full bg-[#FF8B8B]/10 text-[#FF8B8B] flex items-center justify-center">
-                  <Upload className="w-4 h-4" />
+              <div className="flex flex-col items-center justify-center gap-2">
+                <div className="w-10 h-10 rounded-full bg-[#FF8B8B]/10 text-[#FF8B8B] flex items-center justify-center">
+                  <Upload className="w-5 h-5" />
                 </div>
-                <p className="text-xs font-bold text-[#4A4E69]">
-                  Haz clic para subir fotos desde tu dispositivo o arrástralas aquí
-                </p>
-                <p className="text-[10px] text-[#8C90A4]">
-                  Se optimizarán automáticamente (WebP/JPEG) y subirán a Firebase Storage
-                </p>
+                <div>
+                  <p className="text-xs font-bold text-[#4A4E69]">
+                    Haz clic aquí o arrastra las fotos de tu producto
+                  </p>
+                  <p className="text-[10px] text-[#8C90A4] mt-0.5">
+                    Formatos JPG, PNG, WebP (alta resolución con optimización automática)
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    fileInputRef.current?.click();
+                  }}
+                  disabled={isSaving}
+                  className="mt-1 px-4 py-1.5 rounded-xl bg-white border border-[#FF8B8B] text-[#FF8B8B] hover:bg-[#FF8B8B] hover:text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Elegir fotos desde este equipo</span>
+                </button>
               </div>
             </div>
 
