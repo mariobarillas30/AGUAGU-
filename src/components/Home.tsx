@@ -10,6 +10,7 @@ import {
   Lock,
 } from 'lucide-react';
 import { AguAguLogo } from './common/AguAguLogo';
+import { normalizeTableSlug } from '../utils/slug';
 
 interface HomeProps {
   onNavigate: (view: 'home' | 'admin' | 'public_mesa', slug?: string) => void;
@@ -21,7 +22,7 @@ export const Home: React.FC<HomeProps> = ({ onNavigate }) => {
 
   const handleDirectAccess = (e: React.FormEvent) => {
     e.preventDefault();
-    const clean = directCodeInput.trim().replace(/^#mesa\//, '').replace(/^\/mesa\//, '').replace(/^#/, '');
+    const clean = normalizeTableSlug(directCodeInput);
     if (!clean) {
       setCodeError('Por favor ingresa el código privado de la mesa.');
       return;

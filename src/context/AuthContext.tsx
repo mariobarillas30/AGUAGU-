@@ -3,117 +3,124 @@ import {
   User,
   signInWithPopup,
   signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
-  signInAnonymously,
 } from 'firebase/auth';
-import { auth, googleProvider } from '../firebase/config';
+import { doc, getDoc } from 'firebase/firestore';
+import { auth, googleProvider, db } from '../firebase/config';
+
+export const AUTHORIZED_ADMIN_EMAILS = [
+  'mariobarillas24@gmail.com',
+  'admin@aguagu.com',
+  'admin@tiendadebebes.com',
+];
 
 interface AuthContextType {
   user: User | null;
   isAdmin: boolean;
   loading: boolean;
-  signInWithGoogle: () => Promise<void>;
-  signInWithEmail: (email: string, pass: string) => Promise<void>;
-  signUpWithEmail: (email: string, pass: string) => Promise<void>;
-  signInAsDemoAdmin: () => Promise<void>;
+  authError: string | null;
+  signInWithGoogle: () => Promise<boolean>;
+  signInWithEmail: (email: string, pass: string) => Promise<boolean>;
   logout: () => Promise<void>;
+  clearAuthError: () => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
   isAdmin: false,
   loading: true,
-  signInWithGoogle: async () => {},
-  signInWithEmail: async () => {},
-  signUpWithEmail: async () => {},
-  signInAsDemoAdmin: async () => {},
+  authError: null,
+  signInWithGoogle: async () => false,
+  signInWithEmail: async () => false,
   logout: async () => {},
+  clearAuthError: () => {},
 });
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(() => {
-    try {
-      const saved = localStorage.getItem('demo_admin_user');
-      if (saved) {
-        return JSON.parse(saved) as User;
-      }
-    } catch (e) {
-      console.warn('Error reading saved auth state:', e);
+async function verifyAdminPrivileges(currentUser: User): Promise<boolean> {
+  try {
+    // 1. Verificar Custom Claims en el token de Firebase
+    const tokenResult = await currentUser.getIdTokenResult();
+    if (tokenResult.claims.admin === true) {
+      return true;
     }
-    return null;
-  });
+
+    // 2. Verificar lista explícita de correos autorizados
+    const userEmail = currentUser.email?.toLowerCase().trim();
+    if (userEmail && AUTHORIZED_ADMIN_EMAILS.includes(userEmail)) {
+      return true;
+    }
+
+    // 3. Verificar documento en colección 'admins' por UID
+    const adminUidDoc = await getDoc(doc(db, 'admins', currentUser.uid));
+    if (adminUidDoc.exists() && (adminUidDoc.data()?.role === 'admin' || adminUidDoc.data()?.active === true)) {
+      return true;
+    }
+
+    // 4. Verificar documento en colección 'admins' por email
+    if (userEmail) {
+      const adminEmailDoc = await getDoc(doc(db, 'admins', userEmail));
+      if (adminEmailDoc.exists() && (adminEmailDoc.data()?.role === 'admin' || adminEmailDoc.data()?.active === true)) {
+        return true;
+      }
+    }
+  } catch (error) {
+    console.warn('Advertencia al consultar colección admins:', error);
+    // Fallback seguro a lista de correos autorizados
+    const userEmail = currentUser.email?.toLowerCase().trim();
+    if (userEmail && AUTHORIZED_ADMIN_EMAILS.includes(userEmail)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [user, setUser] = useState<User | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
-        localStorage.removeItem('demo_admin_user');
+        const hasAdminRole = await verifyAdminPrivileges(currentUser);
+        setIsAdmin(hasAdminRole);
+      } else {
+        setUser(null);
+        setIsAdmin(false);
       }
       setLoading(false);
     });
     return () => unsubscribe();
   }, []);
 
-  const signInWithGoogle = async () => {
+  const signInWithGoogle = async (): Promise<boolean> => {
+    setAuthError(null);
     try {
-      await signInWithPopup(auth, googleProvider);
+      const result = await signInWithPopup(auth, googleProvider);
+      const hasAdminRole = await verifyAdminPrivileges(result.user);
+      setUser(result.user);
+      setIsAdmin(hasAdminRole);
+      return hasAdminRole;
     } catch (error: any) {
       console.error('Error Google Sign-In:', error);
       throw error;
     }
   };
 
-  const signInWithEmail = async (email: string, pass: string) => {
+  const signInWithEmail = async (email: string, pass: string): Promise<boolean> => {
+    setAuthError(null);
     try {
-      await signInWithEmailAndPassword(auth, email, pass);
+      const result = await signInWithEmailAndPassword(auth, email.trim(), pass);
+      const hasAdminRole = await verifyAdminPrivileges(result.user);
+      setUser(result.user);
+      setIsAdmin(hasAdminRole);
+      return hasAdminRole;
     } catch (error: any) {
-      if (error?.code === 'auth/operation-not-allowed' || error?.code === 'auth/user-not-found' || error?.code === 'auth/invalid-credential') {
-        // Automatically grant store admin demo access if email/password auth is not enabled in Firebase console
-        const adminUser = {
-          uid: 'store-admin-email',
-          email: email || 'admin@tiendadebebes.com',
-          displayName: 'Administrador Tienda',
-        } as User;
-        setUser(adminUser);
-        localStorage.setItem('demo_admin_user', JSON.stringify(adminUser));
-        return;
-      }
+      console.error('Error Email Sign-In:', error);
       throw error;
-    }
-  };
-
-  const signUpWithEmail = async (email: string, pass: string) => {
-    try {
-      await createUserWithEmailAndPassword(auth, email, pass);
-    } catch (error: any) {
-      if (error?.code === 'auth/operation-not-allowed') {
-        const adminUser = {
-          uid: 'store-admin-user',
-          email: email || 'admin@tiendadebebes.com',
-          displayName: 'Administrador Tienda',
-        } as User;
-        setUser(adminUser);
-        localStorage.setItem('demo_admin_user', JSON.stringify(adminUser));
-        return;
-      }
-      throw error;
-    }
-  };
-
-  const signInAsDemoAdmin = async () => {
-    const adminUser = {
-      uid: 'demo-admin-uid',
-      email: 'admin@tiendadebebes.com',
-      displayName: 'Administrador Tienda',
-    } as User;
-    setUser(adminUser);
-    try {
-      localStorage.setItem('demo_admin_user', JSON.stringify(adminUser));
-    } catch (e) {
-      console.warn('LocalStorage error:', e);
     }
   };
 
@@ -123,21 +130,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (e) {
       console.error('Logout error:', e);
     }
-    localStorage.removeItem('demo_admin_user');
     setUser(null);
+    setIsAdmin(false);
+    setAuthError(null);
   };
+
+  const clearAuthError = () => setAuthError(null);
 
   return (
     <AuthContext.Provider
       value={{
         user,
-        isAdmin: !!user,
+        isAdmin,
         loading,
+        authError,
         signInWithGoogle,
         signInWithEmail,
-        signUpWithEmail,
-        signInAsDemoAdmin,
         logout,
+        clearAuthError,
       }}
     >
       {children}
@@ -146,3 +156,4 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 };
 
 export const useAuth = () => useContext(AuthContext);
+

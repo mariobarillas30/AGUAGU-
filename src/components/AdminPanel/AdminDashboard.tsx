@@ -18,7 +18,9 @@ import {
   AlertCircle,
   Database,
   Store,
+  LogOut,
 } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
 import { Product, GiftTable, TableItem, ExtraProduct, StoreConfig } from '../../types';
 import {
   getProducts,
@@ -38,6 +40,7 @@ import {
   deleteGiftTable,
   subscribeToAdminData,
 } from '../../services/dbService';
+import { getCanonicalMesaUrl } from '../../utils/slug';
 import { ProductModal } from './ProductModal';
 import { CreateGiftTableModal } from './CreateGiftTableModal';
 import { GiftTableDetailView } from './GiftTableDetailView';
@@ -45,6 +48,7 @@ import { AguAguLogo } from '../common/AguAguLogo';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 
 export const AdminDashboard: React.FC = () => {
+  const { user, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<'tables' | 'inventory' | 'extras' | 'config'>('tables');
   
   // Data states
@@ -174,8 +178,7 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const copyTableLink = (slug: string) => {
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
-    const fullUrl = `${origin}/#mesa/${slug}`;
+    const fullUrl = getCanonicalMesaUrl(slug);
     navigator.clipboard.writeText(fullUrl);
     setCopiedSlug(slug);
     setTimeout(() => setCopiedSlug(null), 2500);
@@ -335,19 +338,31 @@ export const AdminDashboard: React.FC = () => {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Header Tabs */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
-        <div className="flex items-center gap-3.5">
-          <AguAguLogo size="lg" showText={false} />
-          <div>
-            <div className="flex items-center gap-2 mb-0.5">
-              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-[#E0F2F1] text-[#00897B] border border-[#B2DFDB]">
-                Panel de Tienda
-              </span>
-              <span className="text-xs text-[#8E8D8A]">Agu Agu Oficial</span>
+        <div className="flex items-center justify-between w-full md:w-auto">
+          <div className="flex items-center gap-3.5">
+            <AguAguLogo size="lg" showText={false} />
+            <div>
+              <div className="flex items-center gap-2 mb-0.5">
+                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-[#E0F2F1] text-[#00897B] border border-[#B2DFDB]">
+                  Panel de Tienda
+                </span>
+                <span className="text-xs text-[#8E8D8A] truncate max-w-[180px] sm:max-w-xs" title={user?.email || ''}>
+                  {user?.email || 'Administrador Autorizado'}
+                </span>
+              </div>
+              <h1 className="text-2xl sm:text-3xl font-heading font-bold text-[#4A4A4A]">
+                Agu Agu - Mesa de Regalos
+              </h1>
             </div>
-            <h1 className="text-2xl sm:text-3xl font-heading font-bold text-[#4A4A4A]">
-              Agu Agu - Mesa de Regalos
-            </h1>
           </div>
+
+          <button
+            onClick={() => logout()}
+            className="md:hidden p-2 rounded-xl text-[#8E8D8A] hover:text-red-500 hover:bg-red-50 transition-colors"
+            title="Cerrar sesión"
+          >
+            <LogOut className="w-5 h-5" />
+          </button>
         </div>
 
         {/* Tab switcher */}

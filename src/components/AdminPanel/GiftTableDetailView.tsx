@@ -25,6 +25,7 @@ import {
   addItemsToGiftTable,
   subscribeToGiftTableDetail,
 } from '../../services/dbService';
+import { getCanonicalMesaUrl } from '../../utils/slug';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 
 interface GiftTableDetailViewProps {
@@ -80,9 +81,7 @@ export const GiftTableDetailView: React.FC<GiftTableDetailViewProps> = ({
   }, [initialTable.id]);
 
   const copyPublicLink = () => {
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
-    const basePath = typeof window !== 'undefined' ? window.location.pathname.replace(/\/$/, '') : '';
-    const fullUrl = `${origin}${basePath}/#mesa/${currentTable.slug}`;
+    const fullUrl = getCanonicalMesaUrl(currentTable.slug);
     navigator.clipboard.writeText(fullUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);

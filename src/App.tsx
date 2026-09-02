@@ -6,9 +6,11 @@ import { PublicMesaView } from './components/PublicMesa/PublicMesaView';
 import { AdminLogin } from './components/AdminPanel/AdminLogin';
 import { AdminDashboard } from './components/AdminPanel/AdminDashboard';
 import { AguAguLogo } from './components/common/AguAguLogo';
+import { normalizeTableSlug } from './utils/slug';
+import { ShieldAlert, LogOut, ArrowLeft } from 'lucide-react';
 
 function MainAppContent() {
-  const { user, loading: authLoading } = useAuth();
+  const { user, isAdmin, loading: authLoading, logout } = useAuth();
   
   const [currentView, setCurrentView] = useState<'home' | 'admin' | 'public_mesa'>('home');
   const [activeSlug, setActiveSlug] = useState<string>('');
@@ -20,7 +22,8 @@ function MainAppContent() {
       const pathname = window.location.pathname;
 
       if (hash.startsWith('#mesa/')) {
-        const slug = hash.replace('#mesa/', '').trim();
+        const rawSlug = hash.replace('#mesa/', '').trim();
+        const slug = normalizeTableSlug(rawSlug);
         if (slug) {
           setActiveSlug(slug);
           setCurrentView('public_mesa');
@@ -33,7 +36,8 @@ function MainAppContent() {
 
       // Check pathname fallback
       if (pathname.startsWith('/mesa/')) {
-        const slug = pathname.replace('/mesa/', '').trim();
+        const rawSlug = pathname.replace('/mesa/', '').trim();
+        const slug = normalizeTableSlug(rawSlug);
         if (slug) {
           setActiveSlug(slug);
           setCurrentView('public_mesa');
@@ -57,8 +61,9 @@ function MainAppContent() {
   const navigateTo = (view: 'home' | 'admin' | 'public_mesa', slug?: string) => {
     setCurrentView(view);
     if (view === 'public_mesa' && slug) {
-      setActiveSlug(slug);
-      window.location.hash = `#mesa/${slug}`;
+      const cleanSlug = normalizeTableSlug(slug);
+      setActiveSlug(cleanSlug);
+      window.location.hash = `#mesa/${cleanSlug}`;
     } else if (view === 'admin') {
       window.location.hash = '#admin';
     } else {
@@ -98,10 +103,47 @@ function MainAppContent() {
                 <div className="w-10 h-10 border-4 border-[#A8D8EA] border-t-[#FF8B8B] rounded-full animate-spin mx-auto mb-3" />
                 <p className="text-xs text-[#8E8D8A]">Verificando permisos de administración...</p>
               </div>
-            ) : user ? (
+            ) : !user ? (
+              <AdminLogin />
+            ) : isAdmin ? (
               <AdminDashboard />
             ) : (
-              <AdminLogin />
+              /* Authenticated but not an administrator */
+              <div className="max-w-md mx-auto my-12 p-6 sm:p-8 bg-white rounded-3xl border border-red-100 shadow-md text-center">
+                <div className="w-14 h-14 rounded-2xl bg-red-50 text-red-500 mx-auto flex items-center justify-center mb-4">
+                  <ShieldAlert className="w-8 h-8" />
+                </div>
+                <h2 className="text-xl font-heading font-bold text-[#4A4A4A] mb-2">
+                  Acceso Restringido
+                </h2>
+                <p className="text-xs text-[#8E8D8A] mb-4 leading-relaxed">
+                  Has iniciado sesión como <strong className="text-[#4A4A4A]">{user.email || user.uid}</strong>, pero esta cuenta no cuenta con privilegios de administrador para la tienda <strong>Agu Agu</strong>.
+                </p>
+                <div className="p-3.5 bg-[#FAF7F2] rounded-2xl border border-gray-100 text-xs text-[#5D5C5B] mb-6 text-left">
+                  <p className="font-bold text-[#4A4A4A] mb-1">¿Qué puedes hacer?</p>
+                  <p className="text-[11px] text-[#8E8D8A]">
+                    Inicia sesión con la cuenta de correo oficial autorizada de la tienda o contacta al administrador del sistema.
+                  </p>
+                </div>
+                <div className="flex flex-col sm:flex-row items-center gap-3">
+                  <button
+                    onClick={async () => {
+                      await logout();
+                    }}
+                    className="w-full py-2.5 px-4 rounded-xl bg-red-500 text-white font-bold text-xs hover:bg-red-600 transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-xs"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    Cerrar Sesión
+                  </button>
+                  <button
+                    onClick={() => navigateTo('home')}
+                    className="w-full py-2.5 px-4 rounded-xl bg-[#FAF7F2] text-[#5D5C5B] font-bold text-xs hover:bg-gray-100 transition-colors flex items-center justify-center gap-2 cursor-pointer border border-gray-200"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                    Volver al Inicio
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         )}
@@ -122,12 +164,22 @@ function MainAppContent() {
               >
                 Inicio
               </button>
-              {user ? (
+              {user && isAdmin ? (
                 <button
                   onClick={() => navigateTo('admin')}
                   className="hover:text-[#FF8B8B] transition-colors cursor-pointer text-[#00897B] font-bold"
                 >
                   Panel de Tienda (Admin)
+                </button>
+              ) : user && !isAdmin ? (
+                <button
+                  onClick={async () => {
+                    await logout();
+                    navigateTo('home');
+                  }}
+                  className="hover:text-red-500 transition-colors cursor-pointer text-red-500"
+                >
+                  Cerrar Sesión ({user.email?.split('@')[0]})
                 </button>
               ) : currentView !== 'public_mesa' ? (
                 <button
@@ -156,3 +208,4 @@ export default function App() {
     </AuthProvider>
   );
 }
+

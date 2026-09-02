@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { Product } from '../../types';
 import { createGiftTable, getProducts, seedInitialSampleDataIfEmpty } from '../../services/dbService';
+import { getCanonicalMesaUrl } from '../../utils/slug';
 
 interface CreateGiftTableModalProps {
   isOpen: boolean;
@@ -157,8 +158,7 @@ export const CreateGiftTableModal: React.FC<CreateGiftTableModalProps> = ({
 
   const copyPublicLink = () => {
     if (!createdSlug) return;
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
-    const fullUrl = `${origin}/#mesa/${createdSlug}`;
+    const fullUrl = getCanonicalMesaUrl(createdSlug);
     navigator.clipboard.writeText(fullUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);

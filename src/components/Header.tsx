@@ -1,5 +1,5 @@
 import React from 'react';
-import { Store, ShieldCheck, Heart, Lock } from 'lucide-react';
+import { Store, ShieldCheck, Heart, Lock, ShieldX, LogOut } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AguAguLogo } from './common/AguAguLogo';
 
@@ -10,7 +10,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate }) => {
-  const { user, logout } = useAuth();
+  const { user, isAdmin, logout } = useAuth();
   const isGuestMesaView = currentView === 'public_mesa';
 
   return (
@@ -54,28 +54,42 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate }) => {
           <div className="flex items-center gap-2 sm:gap-3">
             {user ? (
               <div className="flex items-center gap-2 sm:gap-2.5">
-                <button
-                  id="header-admin-dashboard-btn"
-                  onClick={() => onNavigate('admin')}
-                  className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                    currentView === 'admin'
-                      ? 'bg-[#FF8B8B] text-white shadow-xs'
-                      : 'bg-[#E0F2F1] border border-[#B2DFDB] text-[#00897B] hover:bg-[#B2DFDB]/60'
-                  }`}
-                  title="Ir al Panel de Administración"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  <span>Panel de Tienda</span>
-                </button>
-                <div className="w-8 h-8 rounded-full border-2 border-pink-200 bg-[#F7C8D0] flex items-center justify-center text-xs font-bold text-[#D64E66]">
-                  👑
-                </div>
+                {isAdmin ? (
+                  <>
+                    <button
+                      id="header-admin-dashboard-btn"
+                      onClick={() => onNavigate('admin')}
+                      className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                        currentView === 'admin'
+                          ? 'bg-[#FF8B8B] text-white shadow-xs'
+                          : 'bg-[#E0F2F1] border border-[#B2DFDB] text-[#00897B] hover:bg-[#B2DFDB]/60'
+                      }`}
+                      title="Ir al Panel de Administración"
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>Panel de Tienda</span>
+                    </button>
+                    <div className="w-8 h-8 rounded-full border-2 border-pink-200 bg-[#F7C8D0] flex items-center justify-center text-xs font-bold text-[#D64E66]" title={user.email || 'Admin'}>
+                      👑
+                    </div>
+                  </>
+                ) : (
+                  <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1">
+                    <ShieldX className="w-3 h-3" />
+                    Sin rol Admin
+                  </span>
+                )}
                 <button
                   id="header-logout-btn"
-                  onClick={() => logout()}
-                  className="px-2.5 py-1.5 text-xs font-bold text-[#8E8D8A] hover:text-[#D64E66] hover:bg-pink-50 rounded-full transition-colors cursor-pointer"
+                  onClick={async () => {
+                    await logout();
+                    onNavigate('home');
+                  }}
+                  className="px-2.5 py-1.5 text-xs font-bold text-[#8E8D8A] hover:text-[#D64E66] hover:bg-pink-50 rounded-full transition-colors cursor-pointer flex items-center gap-1"
+                  title="Cerrar sesión"
                 >
-                  Cerrar
+                  <LogOut className="w-3 h-3" />
+                  <span className="hidden sm:inline">Salir</span>
                 </button>
               </div>
             ) : !isGuestMesaView ? (
@@ -101,3 +115,4 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate }) => {
     </header>
   );
 };
+

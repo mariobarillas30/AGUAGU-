@@ -24,6 +24,9 @@ import {
   deleteProductImagesFolder,
   deleteImageFromStorageByUrl,
 } from './storageService';
+import { normalizeTableSlug, generateRandomSlug, getCanonicalMesaUrl } from '../utils/slug';
+
+export { normalizeTableSlug, generateRandomSlug, getCanonicalMesaUrl };
 
 export enum OperationType {
   CREATE = 'create',
@@ -87,22 +90,6 @@ export const DEFAULT_STORE_CONFIG: StoreConfig = {
   storeAddress: 'Tienda Oficial Agu Agu',
   currencySymbol: '$',
 };
-
-// Generador de slug único aleatorio
-export function generateRandomSlug(baseName: string): string {
-  // Limpiar caracteres especiales
-  const cleanBase = baseName
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '') // Quitar acentos
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 20);
-
-  // Sufijo aleatorio de 5 caracteres alfanuméricos
-  const randomSuffix = Math.random().toString(36).substring(2, 7);
-  return cleanBase ? `${cleanBase}-${randomSuffix}` : `mesa-${randomSuffix}`;
-}
 
 // -----------------------------------------------------------------------------
 // CONFIGURACIÓN DE LA TIENDA
@@ -532,8 +519,11 @@ export async function getGiftTables(): Promise<GiftTable[]> {
 
 export async function getGiftTableBySlug(slug: string): Promise<{ table: GiftTable; items: TableItem[] } | null> {
   try {
+    const normalizedSlug = normalizeTableSlug(slug);
+    if (!normalizedSlug) return null;
+
     const coll = collection(db, GIFT_TABLES_COLLECTION);
-    const q = query(coll, where('slug', '==', slug.trim().toLowerCase()));
+    const q = query(coll, where('slug', '==', normalizedSlug));
     const snap = await getDocs(q);
 
     if (snap.empty) {
@@ -646,9 +636,9 @@ export async function createGiftTable(
   tableData: Omit<GiftTable, 'id' | 'createdAt' | 'slug'> & { customSlug?: string },
   selectedProducts: Product[] = []
 ): Promise<{ tableId: string; slug: string }> {
-  // Generar o usar slug base
+  // Generar o usar slug base con normalización uniforme
   let slug = tableData.customSlug
-    ? tableData.customSlug.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-')
+    ? normalizeTableSlug(tableData.customSlug)
     : generateRandomSlug(tableData.babyName || tableData.familyName || 'mesa');
 
   if (!slug) {
@@ -1002,8 +992,9 @@ export function subscribeToGiftTableWithInventory(
   });
 
   // 4. Buscar la mesa por slug
+  const normalizedSlug = normalizeTableSlug(slug);
   const tablesColl = collection(db, GIFT_TABLES_COLLECTION);
-  const q = query(tablesColl, where('slug', '==', slug.trim().toLowerCase()));
+  const q = query(tablesColl, where('slug', '==', normalizedSlug));
 
   const unsubTableQuery = onSnapshot(q, (snap) => {
     if (snap.empty) {
