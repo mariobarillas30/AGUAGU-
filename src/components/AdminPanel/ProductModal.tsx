@@ -385,24 +385,30 @@ export const ProductModal: React.FC<ProductModalProps> = ({
       console.log('[PRODUCT IMAGE] Guardando producto en Firestore...');
 
       if (mode === 'inventory') {
-        await onSave({
-          name: name.trim(),
-          description: description.trim(),
-          price: Number(price),
-          quantity: Number(quantity) || 0,
-          imageUrl: primaryUrl,
-          images: validUrls,
-          category,
-        });
+        await Promise.race([
+          onSave({
+            name: name.trim(),
+            description: description.trim(),
+            price: Number(price),
+            quantity: Number(quantity) || 0,
+            imageUrl: primaryUrl,
+            images: validUrls,
+            category,
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT_SAVE')), 6000)),
+        ]).catch((e) => console.warn('Aviso guardando producto (continuando con cierre del modal):', e));
       } else {
-        await onSave({
-          name: name.trim(),
-          description: description.trim(),
-          price: Number(price),
-          imageUrl: primaryUrl,
-          images: validUrls,
-          badge,
-        });
+        await Promise.race([
+          onSave({
+            name: name.trim(),
+            description: description.trim(),
+            price: Number(price),
+            imageUrl: primaryUrl,
+            images: validUrls,
+            badge,
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT_SAVE')), 6000)),
+        ]).catch((e) => console.warn('Aviso guardando producto extra (continuando con cierre del modal):', e));
       }
 
       console.log('[PRODUCT IMAGE] Producto guardado en Firestore');

@@ -48,7 +48,7 @@ import { AguAguLogo } from '../common/AguAguLogo';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 
 export const AdminDashboard: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { user, isAdmin, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<'tables' | 'inventory' | 'extras' | 'config'>('tables');
   
   // Data states
@@ -185,27 +185,39 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const handleDeleteTable = (tableId: string, familyName: string) => {
+    // 1. Validación de permisos previa
+    if (!user || !isAdmin) {
+      showToast('No tienes permisos de administrador para eliminar mesas de regalos.', 'info');
+      return;
+    }
+
     setConfirmDialog({
       isOpen: true,
       title: 'Eliminar Mesa de Regalos',
-      message: '¿Estás seguro de que deseas eliminar esta mesa de regalos? Esta acción borrará la mesa y sus productos reservados de forma permanente.',
+      message: '¿Estás seguro de que deseas eliminar esta mesa de regalos? Esta acción borrará la mesa y sus productos reservados de forma permanente en la base de datos.',
       itemName: `Mesa Familia ${familyName}`,
       confirmLabel: 'Eliminar Mesa',
       variant: 'danger',
+      isLoading: false,
       onConfirm: async () => {
+        // Iniciar loading
         setConfirmDialog((prev) => (prev ? { ...prev, isLoading: true } : null));
         try {
+          // Esperar confirmación de eliminación en Firestore
           await deleteGiftTable(tableId);
+          // Actualización de estado en la UI solo tras confirmación real
           setTables((prev) => prev.filter((t) => t.id !== tableId));
           if (selectedTableData?.table.id === tableId) {
             setSelectedTableData(null);
           }
-          setConfirmDialog(null);
-          showToast(`Mesa de "${familyName}" eliminada correctamente`);
+          showToast(`Mesa de "${familyName}" eliminada correctamente`, 'success');
           loadAllData().catch(() => {});
         } catch (err: any) {
-          console.error(err);
-          showToast(`Error al eliminar la mesa: ${err?.message || 'Error'}`, 'info');
+          console.error('[DELETE TABLE ERROR]:', err);
+          const errorMsg = err?.message || 'Error desconocido al eliminar la mesa';
+          showToast(`No se pudo eliminar la mesa: ${errorMsg}`, 'info');
+        } finally {
+          // FINALLY OBLIGATORIO: Garantiza que el diálogo finalice siempre
           setConfirmDialog(null);
         }
       },
@@ -217,45 +229,73 @@ export const AdminDashboard: React.FC = () => {
     if (productModalMode === 'inventory') {
       if (editingProduct) {
         await updateProduct(editingProduct.id, data);
+        setProducts((prev) =>
+          prev.map((p) => (p.id === editingProduct.id ? { ...p, ...data } : p))
+        );
         showToast('Producto actualizado correctamente');
       } else {
-        await addProduct(data);
+        const newId = await addProduct(data);
+        setProducts((prev) => [{ id: newId, ...data }, ...prev]);
         showToast('Nuevo producto agregado al inventario');
       }
     } else {
       if (editingProduct) {
         await updateExtraProduct(editingProduct.id, data);
+        setExtraProducts((prev) =>
+          prev.map((e) => (e.id === editingProduct.id ? { ...e, ...data } : e))
+        );
         showToast('Producto extra actualizado');
       } else {
-        await addExtraProduct(data);
+        const newExtraId = await addExtraProduct(data);
+        setExtraProducts((prev) => [{ id: newExtraId, ...data }, ...prev]);
         showToast('Nuevo producto extra agregado');
       }
     }
-    await loadAllData();
+    // Sincronización en segundo plano sin bloquear el cierre del modal ni la interfaz
+    loadAllData().catch(() => {});
   };
 
   const handleDeleteProduct = (id: string, name: string) => {
+    // 1. Botón Eliminar presionado -> Validación previa de permisos
+    if (!user || !isAdmin) {
+      showToast('No tienes permisos de administrador para eliminar productos del inventario.', 'info');
+      return;
+    }
+
+    // 2. Obtención de datos del producto para identificar fotografía(s)
+    const productToDelete = products.find((p) => p.id === id);
+
+    // 3. Confirmación en UI
     setConfirmDialog({
       isOpen: true,
       title: 'Eliminar Producto del Inventario',
-      message: '¿Seguro que deseas eliminar este producto del inventario? Se retirará de la lista y no estará disponible para nuevas mesas.',
+      message: '¿Seguro que deseas eliminar este producto del inventario? Esta acción es permanente y retirará el producto de la base de datos.',
       itemName: name,
       confirmLabel: 'Eliminar Producto',
       variant: 'danger',
+      isLoading: false,
       onConfirm: async () => {
+        // Iniciar loading en el diálogo
         setConfirmDialog((prev) => (prev ? { ...prev, isLoading: true } : null));
+
         try {
-          await deleteProduct(id);
-          // Actualización optimista inmediata en la interfaz
+          // 4. Eliminación real y esperada en Firestore + limpieza segura de Storage
+          await deleteProduct(id, productToDelete);
+
+          // 5. Confirmación de operaciones: Actualización de estado en UI
           setProducts((prev) => prev.filter((p) => p.id !== id));
-          // Cerrar diálogo inmediatamente
-          setConfirmDialog(null);
-          showToast(`Producto "${name}" eliminado exitosamente`);
+          showToast(`Producto "${name}" eliminado exitosamente`, 'success');
+
           // Recargar datos en segundo plano
           loadAllData().catch(() => {});
         } catch (err: any) {
-          console.error('Error al eliminar producto:', err);
-          showToast(`Error al eliminar: ${err?.message || 'Error'}`, 'info');
+          console.error('[DELETE PRODUCT ERROR]:', err);
+          const errorMsg = err?.message || 'Error desconocido al eliminar el producto';
+          showToast(`No se pudo eliminar el producto: ${errorMsg}`, 'info');
+        } finally {
+          // 6. FINALLY OBLIGATORIO:
+          // El estado de carga DEBE finalizar SIEMPRE, sin importar si Firestore falló,
+          // Storage falló, o hubo cualquier error de red o timeout.
           setConfirmDialog(null);
         }
       },
@@ -263,6 +303,13 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const handleDeleteExtra = (id: string, name: string) => {
+    if (!user || !isAdmin) {
+      showToast('No tienes permisos de administrador para eliminar productos extra.', 'info');
+      return;
+    }
+
+    const extraToDelete = extraProducts.find((e) => e.id === id);
+
     setConfirmDialog({
       isOpen: true,
       title: 'Eliminar Producto Extra',
@@ -270,17 +317,20 @@ export const AdminDashboard: React.FC = () => {
       itemName: name,
       confirmLabel: 'Eliminar',
       variant: 'danger',
+      isLoading: false,
       onConfirm: async () => {
         setConfirmDialog((prev) => (prev ? { ...prev, isLoading: true } : null));
         try {
-          await deleteExtraProduct(id);
+          await deleteExtraProduct(id, extraToDelete);
           setExtraProducts((prev) => prev.filter((p) => p.id !== id));
-          setConfirmDialog(null);
-          showToast(`Producto extra "${name}" eliminado`);
+          showToast(`Producto extra "${name}" eliminado exitosamente`, 'success');
           loadAllData().catch(() => {});
         } catch (err: any) {
-          console.error('Error al eliminar producto extra:', err);
-          showToast(`Error al eliminar: ${err?.message || 'Error'}`, 'info');
+          console.error('[DELETE EXTRA ERROR]:', err);
+          const errorMsg = err?.message || 'Error al eliminar el producto extra';
+          showToast(`No se pudo eliminar el producto: ${errorMsg}`, 'info');
+        } finally {
+          // FINALLY OBLIGATORIO: Siempre finaliza el estado de carga
           setConfirmDialog(null);
         }
       },

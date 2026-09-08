@@ -87,6 +87,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
 
         <div className="mt-6 pt-4 border-t border-[#F2EAE0] flex items-center justify-end gap-2.5">
           <button
+            id="confirm-dialog-cancel-btn"
             type="button"
             onClick={onCancel}
             disabled={isLoading}
@@ -96,8 +97,15 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
           </button>
 
           <button
+            id="confirm-dialog-submit-btn"
             type="button"
-            onClick={onConfirm}
+            onClick={async () => {
+              try {
+                await onConfirm();
+              } catch (e) {
+                console.error('[ConfirmDialog] Error en onConfirm:', e);
+              }
+            }}
             disabled={isLoading}
             className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 active:scale-95 ${currentVariant.btnBg}`}
           >

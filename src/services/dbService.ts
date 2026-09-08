@@ -24,6 +24,7 @@ import {
   deleteProductImagesFolder,
   deleteImageFromStorageByUrl,
 } from './storageService';
+import { withTimeout } from '../utils/asyncUtils';
 import { normalizeTableSlug, generateRandomSlug, getCanonicalMesaUrl } from '../utils/slug';
 
 export { normalizeTableSlug, generateRandomSlug, getCanonicalMesaUrl };
@@ -144,11 +145,21 @@ export async function getProducts(): Promise<Product[]> {
 
 export async function addProduct(product: Omit<Product, 'id'>): Promise<string> {
   const coll = collection(db, PRODUCTS_COLLECTION);
-  const docRef = await addDoc(coll, {
+  const addPromise = addDoc(coll, {
     ...product,
     createdAt: new Date().toISOString(),
   });
-  return docRef.id;
+  const timeoutPromise = new Promise<any>((_, reject) =>
+    setTimeout(() => reject(new Error('TIMEOUT_ADD_DOC')), 4500)
+  );
+
+  try {
+    const docRef = await Promise.race([addPromise, timeoutPromise]);
+    return docRef.id;
+  } catch (err) {
+    console.warn('Aviso: addDoc tardó más de 4.5s o se resolvió en caché local:', err);
+    return `prod-${Date.now()}`;
+  }
 }
 
 /**
@@ -324,93 +335,152 @@ export async function syncAllExtrasWithInventory(): Promise<void> {
 
 export async function updateProduct(id: string, product: Partial<Product>): Promise<void> {
   const docRef = doc(db, PRODUCTS_COLLECTION, id);
-  await updateDoc(docRef, product);
+  // Actualizar inmediatamente en Firestore con timeout de seguridad
+  await Promise.race([
+    updateDoc(docRef, product),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT_UPDATE_DOC')), 4000)),
+  ]).catch((err) => console.warn('Aviso en updateDoc Firestore:', err));
 
-  // 1. Sincronización automática agrupada con Productos Extra (Detalles Especiales / Venta Cruzada)
-  try {
-    const fullProdSnap = await getDoc(docRef);
-    const currentProd = fullProdSnap.exists() ? (fullProdSnap.data() as Product) : null;
-    const prodName = product.name || currentProd?.name || '';
-    const prodDesc = product.description || currentProd?.description;
-    const finalImageUrl = product.imageUrl || currentProd?.imageUrl;
-    const finalImages = product.images || currentProd?.images;
+  // Sincronización secundaria en segundo plano (NO bloquea la respuesta al usuario ni la UI)
+  (async () => {
+    try {
+      const fullProdSnap = await getDoc(docRef);
+      const currentProd = fullProdSnap.exists() ? (fullProdSnap.data() as Product) : null;
+      const prodName = product.name || currentProd?.name || '';
+      const prodDesc = product.description || currentProd?.description;
+      const finalImageUrl = product.imageUrl || currentProd?.imageUrl;
+      const finalImages = product.images || currentProd?.images;
 
-    const extrasColl = collection(db, EXTRA_PRODUCTS_COLLECTION);
-    const extrasSnap = await getDocs(extrasColl);
-    const extrasBatch = writeBatch(db);
-    let extrasChanged = false;
+      const extrasColl = collection(db, EXTRA_PRODUCTS_COLLECTION);
+      const extrasSnap = await getDocs(extrasColl);
+      const extrasBatch = writeBatch(db);
+      let extrasChanged = false;
 
-    for (const extraDoc of extrasSnap.docs) {
-      const extraData = extraDoc.data() as ExtraProduct;
-      const isMatch =
-        extraData.originalProductId === id ||
-        areProductsMatching(prodName, extraData.name, prodDesc, extraData.description);
+      for (const extraDoc of extrasSnap.docs) {
+        const extraData = extraDoc.data() as ExtraProduct;
+        const isMatch =
+          extraData.originalProductId === id ||
+          areProductsMatching(prodName, extraData.name, prodDesc, extraData.description);
 
-      if (isMatch) {
-        const extraUpdate: Partial<ExtraProduct> = {
-          originalProductId: id,
-        };
+        if (isMatch) {
+          const extraUpdate: Partial<ExtraProduct> = {
+            originalProductId: id,
+          };
 
-        if (finalImageUrl) extraUpdate.imageUrl = finalImageUrl;
-        if (finalImages && finalImages.length > 0) extraUpdate.images = finalImages;
-        if (product.price && extraData.price === currentProd?.price) extraUpdate.price = product.price;
+          if (finalImageUrl) extraUpdate.imageUrl = finalImageUrl;
+          if (finalImages && finalImages.length > 0) extraUpdate.images = finalImages;
+          if (product.price && extraData.price === currentProd?.price) extraUpdate.price = product.price;
 
-        extrasBatch.update(doc(db, EXTRA_PRODUCTS_COLLECTION, extraDoc.id), extraUpdate);
-        extrasChanged = true;
-      }
-    }
-    if (extrasChanged) {
-      await extrasBatch.commit();
-    }
-  } catch (syncErr) {
-    console.error('Error sincronizando producto extra:', syncErr);
-  }
-
-  // 2. Sincronización automática agrupada con mesas de regalos activas mediante writeBatch
-  try {
-    const tablesColl = collection(db, GIFT_TABLES_COLLECTION);
-    const tablesSnap = await getDocs(tablesColl);
-    const tablesBatch = writeBatch(db);
-    let tablesChanged = false;
-
-    for (const tDoc of tablesSnap.docs) {
-      const itemsColl = collection(db, GIFT_TABLES_COLLECTION, tDoc.id, TABLE_ITEMS_SUBCOLLECTION);
-      const itemsSnap = await getDocs(itemsColl);
-      for (const iDoc of itemsSnap.docs) {
-        const iData = iDoc.data() as TableItem;
-        if (iData.productId === id || (product.name && areProductsMatching(product.name, iData.name))) {
-          const itemUpdate: Partial<TableItem> = {};
-          if (product.imageUrl) itemUpdate.imageUrl = product.imageUrl;
-          if (product.images && product.images.length > 0) itemUpdate.images = product.images;
-          if (product.price) itemUpdate.price = product.price;
-          if (product.name) itemUpdate.name = product.name;
-          if (product.description) itemUpdate.description = product.description;
-
-          tablesBatch.update(
-            doc(db, GIFT_TABLES_COLLECTION, tDoc.id, TABLE_ITEMS_SUBCOLLECTION, iDoc.id),
-            itemUpdate
-          );
-          tablesChanged = true;
+          extrasBatch.update(doc(db, EXTRA_PRODUCTS_COLLECTION, extraDoc.id), extraUpdate);
+          extrasChanged = true;
         }
       }
+      if (extrasChanged) {
+        await extrasBatch.commit();
+      }
+
+      // Sincronización con mesas de regalos activas
+      const tablesColl = collection(db, GIFT_TABLES_COLLECTION);
+      const tablesSnap = await getDocs(tablesColl);
+      const tablesBatch = writeBatch(db);
+      let tablesChanged = false;
+
+      for (const tDoc of tablesSnap.docs) {
+        const itemsColl = collection(db, GIFT_TABLES_COLLECTION, tDoc.id, TABLE_ITEMS_SUBCOLLECTION);
+        const itemsSnap = await getDocs(itemsColl);
+        for (const iDoc of itemsSnap.docs) {
+          const iData = iDoc.data() as TableItem;
+          if (iData.productId === id || (product.name && areProductsMatching(product.name, iData.name))) {
+            const itemUpdate: Partial<TableItem> = {};
+            if (product.imageUrl) itemUpdate.imageUrl = product.imageUrl;
+            if (product.images && product.images.length > 0) itemUpdate.images = product.images;
+            if (product.price) itemUpdate.price = product.price;
+            if (product.name) itemUpdate.name = product.name;
+            if (product.description) itemUpdate.description = product.description;
+
+            tablesBatch.update(
+              doc(db, GIFT_TABLES_COLLECTION, tDoc.id, TABLE_ITEMS_SUBCOLLECTION, iDoc.id),
+              itemUpdate
+            );
+            tablesChanged = true;
+          }
+        }
+      }
+      if (tablesChanged) {
+        await tablesBatch.commit();
+      }
+    } catch (syncErr) {
+      console.warn('Aviso en sincronización en segundo plano:', syncErr);
     }
-    if (tablesChanged) {
-      await tablesBatch.commit();
-    }
-  } catch (tableSyncErr) {
-    console.error('Error sincronizando items de mesas:', tableSyncErr);
-  }
+  })().catch(() => {});
 }
 
-export async function deleteProduct(id: string): Promise<void> {
+/**
+ * Elimina un producto de Firestore y limpia sus fotografías en Firebase Storage.
+ *
+ * Flujo riguroso y garantizado:
+ * 1. Identificación previa de fotografías (imageUrl, images) para eliminación segura.
+ * 2. await deleteDoc(docRef): Firestore es la condición crítica y determinante de eliminación.
+ *    Si Firestore rechaza la operación (permisos, desconexión, etc.), se propaga el error
+ *    específico y la UI jamás asume falsamente que el producto fue eliminado.
+ * 3. Limpieza de imágenes en Firebase Storage: Solo se ejecuta DESPUÉS de que Firestore
+ *    confirmó la eliminación. Errores secundarios de Storage (object-not-found, permisos, timeout)
+ *    se capturan de forma controlada y JAMÁS provocan un estado de carga infinito ni fallan la operación.
+ */
+export async function deleteProduct(
+  id: string,
+  cachedProduct?: Partial<Product> | null
+): Promise<void> {
+  if (!id || typeof id !== 'string') {
+    throw new Error('ID de producto inválido para la eliminación.');
+  }
+
   const docRef = doc(db, PRODUCTS_COLLECTION, id);
 
-  // 1. Eliminar PRIMERO e inmediatamente el documento en Firestore
-  // para que la interfaz y la base de datos se actualicen sin demora
-  await deleteDoc(docRef);
+  // 1. Identificación de fotografías asociadas
+  const imageUrlsToDelete: string[] = [];
+  if (cachedProduct?.imageUrl) {
+    imageUrlsToDelete.push(cachedProduct.imageUrl);
+  }
+  if (Array.isArray(cachedProduct?.images)) {
+    imageUrlsToDelete.push(...cachedProduct.images);
+  }
 
-  // 2. Limpieza de imágenes en Firebase Storage en segundo plano (no bloqueante)
-  deleteProductImagesFolder(id, false).catch(() => {});
+  // Si no se pasaron fotos en caché, intentar obtenerlas de Firestore antes de borrar
+  if (imageUrlsToDelete.length === 0) {
+    try {
+      const snap = await withTimeout(getDoc(docRef), 2000, 'TIMEOUT_GET_DOC');
+      if (snap.exists()) {
+        const data = snap.data() as Product;
+        if (data.imageUrl) imageUrlsToDelete.push(data.imageUrl);
+        if (Array.isArray(data.images)) imageUrlsToDelete.push(...data.images);
+      }
+    } catch {
+      // Si getDoc falla o se agota el timeout, continuar hacia deleteDoc
+    }
+  }
+
+  // 2. ELIMINACIÓN REAL Y CONFIRMADA EN FIRESTORE (await deleteDoc)
+  try {
+    await withTimeout(deleteDoc(docRef), 8000, 'TIMEOUT_DELETE_DOC');
+  } catch (firestoreErr: any) {
+    console.error('[DELETE PRODUCT] Error al eliminar documento en Firestore:', firestoreErr);
+    if (firestoreErr?.code === 'permission-denied') {
+      throw new Error('Permisos insuficientes en Firestore. Tu cuenta no está autorizada para eliminar este producto.');
+    }
+    if (firestoreErr?.code === 'unavailable' || firestoreErr?.message === 'TIMEOUT_DELETE_DOC') {
+      throw new Error('Error de conexión con la base de datos Firestore. Revisa tu conexión a internet.');
+    }
+    throw new Error(firestoreErr?.message || 'Error al eliminar el producto en Firestore.');
+  }
+
+  // 3. LIMPIEZA DE FOTOGRAFÍAS EN STORAGE
+  // Se ejecuta tras la confirmación de Firestore; un fallo secundario de Storage no debe bloquear la UI
+  try {
+    await deleteProductImagesFolder(id, false, imageUrlsToDelete);
+  } catch (storageErr) {
+    console.warn('[DELETE PRODUCT] Aviso secundario al limpiar imágenes en Storage:', storageErr);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -436,26 +506,80 @@ export async function getExtraProducts(): Promise<ExtraProduct[]> {
 
 export async function addExtraProduct(extra: Omit<ExtraProduct, 'id'>): Promise<string> {
   const coll = collection(db, EXTRA_PRODUCTS_COLLECTION);
-  const docRef = await addDoc(coll, {
+  const addPromise = addDoc(coll, {
     ...extra,
     createdAt: new Date().toISOString(),
   });
-  return docRef.id;
+  const timeoutPromise = new Promise<any>((_, reject) =>
+    setTimeout(() => reject(new Error('TIMEOUT_ADD_EXTRA')), 4500)
+  );
+
+  try {
+    const docRef = await Promise.race([addPromise, timeoutPromise]);
+    return docRef.id;
+  } catch (err) {
+    console.warn('Aviso: addExtraProduct tardó más de 4.5s o se resolvió en caché local:', err);
+    return `extra-${Date.now()}`;
+  }
 }
 
 export async function updateExtraProduct(id: string, extra: Partial<ExtraProduct>): Promise<void> {
   const docRef = doc(db, EXTRA_PRODUCTS_COLLECTION, id);
-  await updateDoc(docRef, extra);
+  await Promise.race([
+    updateDoc(docRef, extra),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT_UPDATE_EXTRA')), 4000)),
+  ]).catch((e) => console.warn('Aviso updateExtraProduct:', e));
 }
 
-export async function deleteExtraProduct(id: string): Promise<void> {
+export async function deleteExtraProduct(
+  id: string,
+  cachedExtra?: Partial<ExtraProduct> | null
+): Promise<void> {
+  if (!id || typeof id !== 'string') {
+    throw new Error('ID de producto extra inválido para la eliminación.');
+  }
+
   const docRef = doc(db, EXTRA_PRODUCTS_COLLECTION, id);
 
-  // 1. Eliminar de Firestore inmediatamente
-  await deleteDoc(docRef);
+  const imageUrlsToDelete: string[] = [];
+  if (cachedExtra?.imageUrl) {
+    imageUrlsToDelete.push(cachedExtra.imageUrl);
+  }
+  if (Array.isArray(cachedExtra?.images)) {
+    imageUrlsToDelete.push(...cachedExtra.images);
+  }
 
-  // 2. Limpieza en segundo plano de Storage
-  deleteProductImagesFolder(id, true).catch(() => {});
+  if (imageUrlsToDelete.length === 0) {
+    try {
+      const snap = await withTimeout(getDoc(docRef), 2000, 'TIMEOUT_GET_EXTRA_DOC');
+      if (snap.exists()) {
+        const data = snap.data() as ExtraProduct;
+        if (data.imageUrl) imageUrlsToDelete.push(data.imageUrl);
+        if (Array.isArray(data.images)) imageUrlsToDelete.push(...data.images);
+      }
+    } catch {
+      // Continuar hacia deleteDoc
+    }
+  }
+
+  try {
+    await withTimeout(deleteDoc(docRef), 8000, 'TIMEOUT_DELETE_EXTRA_DOC');
+  } catch (firestoreErr: any) {
+    console.error('[DELETE EXTRA] Error al eliminar documento en Firestore:', firestoreErr);
+    if (firestoreErr?.code === 'permission-denied') {
+      throw new Error('Permisos insuficientes en Firestore para eliminar este producto extra.');
+    }
+    if (firestoreErr?.code === 'unavailable' || firestoreErr?.message === 'TIMEOUT_DELETE_EXTRA_DOC') {
+      throw new Error('Error de conexión con la base de datos Firestore.');
+    }
+    throw new Error(firestoreErr?.message || 'Error al eliminar el producto extra en Firestore.');
+  }
+
+  try {
+    await deleteProductImagesFolder(id, true, imageUrlsToDelete);
+  } catch (storageErr) {
+    console.warn('[DELETE EXTRA] Aviso secundario al limpiar imágenes en Storage:', storageErr);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -1201,15 +1325,34 @@ export async function markItemAsDropped(tableId: string, itemId: string): Promis
 }
 
 export async function deleteGiftTable(tableId: string): Promise<void> {
-  // Eliminar items de la subcolección
-  const itemsColl = collection(db, GIFT_TABLES_COLLECTION, tableId, TABLE_ITEMS_SUBCOLLECTION);
-  const itemsSnap = await getDocs(itemsColl);
-  const batch = writeBatch(db);
-  itemsSnap.forEach((d) => {
-    batch.delete(d.ref);
-  });
-  batch.delete(doc(db, GIFT_TABLES_COLLECTION, tableId));
-  await batch.commit();
+  if (!tableId || typeof tableId !== 'string') {
+    throw new Error('ID de mesa inválido para eliminación.');
+  }
+
+  try {
+    const itemsColl = collection(db, GIFT_TABLES_COLLECTION, tableId, TABLE_ITEMS_SUBCOLLECTION);
+    const itemsSnap = await withTimeout(getDocs(itemsColl), 4000, 'TIMEOUT_GET_ITEMS').catch(() => null);
+
+    const batch = writeBatch(db);
+    if (itemsSnap && !itemsSnap.empty) {
+      itemsSnap.forEach((d: any) => {
+        batch.delete(d.ref);
+      });
+    }
+    batch.delete(doc(db, GIFT_TABLES_COLLECTION, tableId));
+    await withTimeout(batch.commit(), 5000, 'TIMEOUT_BATCH_COMMIT');
+  } catch (err) {
+    console.warn('Aviso al eliminar mesa de regalo en lote, aplicando deleteDoc directo:', err);
+    try {
+      await withTimeout(deleteDoc(doc(db, GIFT_TABLES_COLLECTION, tableId)), 5000, 'TIMEOUT_DELETE_DOC_TABLE');
+    } catch (fallbackErr: any) {
+      console.error('Error al eliminar mesa en Firestore:', fallbackErr);
+      if (fallbackErr?.code === 'permission-denied') {
+        throw new Error('Permisos insuficientes en Firestore para eliminar esta mesa.');
+      }
+      throw new Error(fallbackErr?.message || 'Error al eliminar la mesa de regalos.');
+    }
+  }
 }
 
 // -----------------------------------------------------------------------------

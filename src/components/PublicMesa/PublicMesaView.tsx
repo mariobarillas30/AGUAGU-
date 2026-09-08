@@ -22,6 +22,7 @@ import { GiftItemCard } from './GiftItemCard';
 import { GiftActionModal } from './GiftActionModal';
 import { ExtraProductsSection } from './ExtraProductsSection';
 import { MesaNotFound } from './MesaNotFound';
+import { GiftTableInfoCountdown } from './GiftTableInfoCountdown';
 
 interface PublicMesaViewProps {
   slug: string;
@@ -177,6 +178,9 @@ export const PublicMesaView: React.FC<PublicMesaViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Tarjeta Informativa y Contador Regresivo de la Mesa */}
+      <GiftTableInfoCountdown table={table} />
 
       {/* Filter and Title Section */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">

@@ -5,8 +5,10 @@ import {
   deleteObject,
   listAll,
   getStorage,
+  StorageReference,
 } from 'firebase/storage';
 import { storage, app, auth, firebaseConfig } from '../firebase/config';
+import { withTimeout } from '../utils/asyncUtils';
 
 export interface ProcessedImageResult {
   url: string;
@@ -49,7 +51,10 @@ export async function fileToOptimizedDataUrl(
     }
 
     const img = new Image();
-    img.crossOrigin = 'anonymous';
+    // Solo aplicar crossOrigin a URLs HTTP remotas; en blob: o data: locales en navegadores de escritorio causa fallos de contexto y tainting
+    if (typeof objectUrl === 'string' && objectUrl.startsWith('http')) {
+      img.crossOrigin = 'anonymous';
+    }
 
     const timer = setTimeout(() => {
       try {
@@ -59,7 +64,7 @@ export async function fileToOptimizedDataUrl(
       reader.onload = () => resolve(reader.result as string);
       reader.onerror = () => resolve('');
       reader.readAsDataURL(fileOrBlob);
-    }, 6000);
+    }, 3000);
 
     img.onerror = () => {
       clearTimeout(timer);
@@ -177,17 +182,17 @@ export async function compressAndResizeImage(
   return new Promise((resolve, reject) => {
     let isSettled = false;
 
-    // Timeout de seguridad: si el proceso tarda más de 12 segundos, resolver con el archivo original o rechazar
+    // Timeout de seguridad: si el proceso tarda más de 5 segundos, resolver con el archivo original
     const timeoutTimer = setTimeout(() => {
       if (isSettled) return;
       isSettled = true;
-      console.warn('[PRODUCT IMAGE] Timeout en compresión de imagen (12s). Usando archivo original como fallback.');
+      console.warn('[PRODUCT IMAGE] Timeout en compresión de imagen (5s). Usando archivo original como fallback.');
       resolve({
         blob: file,
         mimeType: file.type || 'image/jpeg',
         extension: file.name.split('.').pop()?.toLowerCase() || 'jpg',
       });
-    }, 12000);
+    }, 5000);
 
     const cleanup = (objectUrl?: string) => {
       clearTimeout(timeoutTimer);
@@ -213,7 +218,11 @@ export async function compressAndResizeImage(
     }
 
     const img = new Image();
-    img.crossOrigin = 'anonymous';
+    // En blob: URLs locales nunca se debe forzar crossOrigin anonymous ya que
+    // en navegadores de escritorio de clientes causa tainting y fallos de permisos CORS
+    if (typeof objectUrl === 'string' && objectUrl.startsWith('http')) {
+      img.crossOrigin = 'anonymous';
+    }
 
     img.onerror = () => {
       if (isSettled) return;
@@ -459,7 +468,7 @@ export async function uploadProductImageToStorage(
       const uploadTask = uploadBytesResumable(targetStorageRef, uploadBlob, metadata);
 
       // Watchdog de seguridad (timeout): detecta conexiones congeladas
-      // Si pasan más de 12 segundos sin respuesta de Storage, se cancela y activa fallback seguro
+      // Si pasan más de 6 segundos sin respuesta o progreso de Storage, se cancela y activa fallback seguro
       const watchdogInterval = setInterval(() => {
         if (isCompleted) {
           clearInterval(watchdogInterval);
@@ -467,17 +476,17 @@ export async function uploadProductImageToStorage(
         }
 
         const now = Date.now();
-        if (now - lastProgressTime > 12000) {
+        if (now - lastProgressTime > 6000) {
           clearInterval(watchdogInterval);
           isCompleted = true;
           try {
             uploadTask.cancel();
           } catch (_) {}
           const timeoutErr = new Error('TIMEOUT_STORAGE');
-          console.warn('[PRODUCT IMAGE] Storage timeout (12s). Activando fallback optimizado.');
+          console.warn('[PRODUCT IMAGE] Storage timeout (6s). Activando fallback optimizado.');
           reject(timeoutErr);
         }
-      }, 1500);
+      }, 1000);
 
       uploadTask.on(
         'state_changed',
@@ -606,57 +615,126 @@ export async function uploadProductImageToStorage(
 }
 
 /**
- * Elimina una imagen de Firebase Storage a partir de su URL pública
+ * Resuelve de forma segura una referencia de Firebase Storage a partir de una URL de descarga o un storagePath.
+ * Retorna null si la URL es de tipo base64/data:, blob:, externa (Unsplash) o inválida,
+ * evitando que la invocación arroje excepciones no controladas o 'storage/invalid-url'.
  */
-export async function deleteImageFromStorageByUrl(url: string): Promise<void> {
-  if (!url || !isFirebaseStorageUrl(url)) {
-    // Si es una URL externa (Unsplash, dataUrl, etc.), no hace nada
-    return;
+export function getStorageRefFromUrlOrPath(urlOrPath: string): StorageReference | null {
+  if (!urlOrPath || typeof urlOrPath !== 'string') return null;
+  const trimmed = urlOrPath.trim();
+  if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return null;
+
+  // Si es una ruta interna directa (ej: 'products/prod_123/foto.webp' o 'extra_products/...')
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+    try {
+      return ref(storage, trimmed);
+    } catch {
+      return null;
+    }
+  }
+
+  // Si es una URL de Firebase Storage
+  if (
+    trimmed.includes('firebasestorage.googleapis.com') ||
+    trimmed.includes('firebasestorage.app') ||
+    trimmed.includes('.appspot.com')
+  ) {
+    try {
+      // El SDK modular de Firebase soporta URLs directas si coinciden con el bucket
+      return ref(storage, trimmed);
+    } catch {
+      // Fallback: extraer la ruta codificada entre /o/ y los parámetros de consulta ?
+      try {
+        const match = trimmed.match(/\/o\/([^?#]+)/);
+        if (match && match[1]) {
+          const decodedPath = decodeURIComponent(match[1]);
+          return ref(storage, decodedPath);
+        }
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Elimina de forma segura una imagen de Firebase Storage a partir de su URL pública o storagePath.
+ * Manejo estricto y seguro:
+ * 1. Resuelve la referencia con getStorageRefFromUrlOrPath.
+ * 2. Si no es un archivo en Storage (ej. base64, Unsplash), finaliza de inmediato como éxito.
+ * 3. Ejecuta deleteObject con un timeout controlado (3500ms) limpiando el temporizador.
+ * 4. Si Storage devuelve 'storage/object-not-found':
+ *    Continúa de forma segura porque el archivo ya no existe.
+ * 5. Si devuelve 'storage/unauthorized', 'storage/permission-denied', 'storage/canceled',
+ *    network error o timeout:
+ *    Se captura y controla sin dejar promesas pendientes ni bloquear al llamador.
+ */
+export async function deleteImageFromStorageByUrl(urlOrPath: string): Promise<boolean> {
+  const fileRef = getStorageRefFromUrlOrPath(urlOrPath);
+  if (!fileRef) {
+    // Si no correspondía a un archivo en Firebase Storage, terminar de forma segura
+    return true;
   }
 
   try {
-    const fileRef = ref(storage, url);
-    await Promise.race([
-      deleteObject(fileRef),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT_DELETE')), 2000)),
-    ]);
+    await withTimeout(deleteObject(fileRef), 3500, 'TIMEOUT_DELETE_STORAGE_OBJECT');
+    return true;
   } catch (error: any) {
-    // Si el objeto ya no existía o Storage no responde, continuar sin bloquear
-    if (error?.code !== 'storage/object-not-found' && error?.message !== 'TIMEOUT_DELETE') {
-      console.warn('Aviso al eliminar imagen de Firebase Storage:', error);
+    // Caso 1: storage/object-not-found -> El objeto ya no existe en Storage (éxito seguro)
+    if (error?.code === 'storage/object-not-found') {
+      return true;
     }
+
+    // Caso 2: Permisos, desconexión o timeout -> Registrar advertencia sin bloquear jamás la UI
+    console.warn(
+      '[STORAGE DELETE] Aviso al eliminar archivo de Firebase Storage:',
+      error?.code || error?.message || error
+    );
+    return false;
   }
 }
 
 /**
- * Elimina todos los archivos contenidos en la carpeta de un producto en Firebase Storage
- * Evita la acumulación de archivos huérfanos con protección estricta contra timeouts.
+ * Elimina todos los archivos e imágenes de un producto en Firebase Storage.
+ * Permite pasar una lista de URLs conocidas (imageUrl, images) para eliminación directa,
+ * además de ejecutar una limpieza asistida del directorio con timeout estricto.
+ * Garantiza que NUNCA dejará una promesa pendiente ni bloqueará el flujo principal.
  */
 export async function deleteProductImagesFolder(
   productId: string,
-  isExtra = false
+  isExtra = false,
+  specificUrls: string[] = []
 ): Promise<void> {
+  if (!productId) return;
+
+  // 1. Eliminar primero las URLs conocidas directamente con manejo seguro individual
+  if (Array.isArray(specificUrls) && specificUrls.length > 0) {
+    const deleteTasks = specificUrls.map((url) =>
+      deleteImageFromStorageByUrl(url).catch(() => false)
+    );
+    await Promise.allSettled(deleteTasks);
+  }
+
+  // 2. Intentar listar y limpiar la carpeta en Firebase Storage con timeout seguro
   const folder = isExtra ? 'extra_products' : 'products';
-  const folderRef = ref(storage, `${folder}/${productId}`);
-
   try {
-    const listPromise = listAll(folderRef);
-    const timeoutPromise = new Promise<any>((_, reject) =>
-      setTimeout(() => reject(new Error('TIMEOUT_LIST_STORAGE')), 2000)
-    );
+    const folderRef = ref(storage, `${folder}/${productId}`);
+    const res = await withTimeout(listAll(folderRef), 2500, 'TIMEOUT_LIST_STORAGE');
 
-    const res = await Promise.race([listPromise, timeoutPromise]);
-    if (!res || !res.items || res.items.length === 0) return;
-
-    const deletePromises = res.items.map((itemRef: any) =>
-      Promise.race([
-        deleteObject(itemRef),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT_DELETE_ITEM')), 1500)),
-      ]).catch(() => {})
-    );
-    await Promise.all(deletePromises);
-  } catch (error: any) {
-    // Si el bucket no está activo o se agota el timeout, salir limpiamente
+    if (res && res.items && res.items.length > 0) {
+      const deletePromises = res.items.map((itemRef: any) =>
+        withTimeout(deleteObject(itemRef), 2000, 'TIMEOUT_DELETE_ITEM').catch((delErr: any) => {
+          if (delErr?.code !== 'storage/object-not-found') {
+            console.warn('[STORAGE DELETE ITEM] Aviso:', delErr?.code || delErr?.message);
+          }
+        })
+      );
+      await Promise.allSettled(deletePromises);
+    }
+  } catch {
+    // Si el bucket no está activo (404), listAll no tiene permisos o se agota el timeout, salir limpiamente
   }
 }
 
