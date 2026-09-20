@@ -44,10 +44,35 @@ export const PublicMesaView: React.FC<PublicMesaViewProps> = ({
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
-  // Filter & Selected gift for modal
-  const [selectedGiftItem, setSelectedGiftItem] = useState<TableItem | null>(null);
+  // Filter & Selected gifts for modal
+  const [selectedGiftItems, setSelectedGiftItems] = useState<TableItem[]>([]);
+  const [isActionModalOpen, setIsActionModalOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<'all' | 'disponible' | 'regalado'>('all');
   const [copiedShare, setCopiedShare] = useState(false);
+
+  const handleSelectGiftSingle = (item: TableItem) => {
+    setSelectedGiftItems((prev) => {
+      if (prev.length > 1) {
+        if (!prev.some((it) => it.id === item.id)) {
+          return [...prev, item];
+        }
+        return prev;
+      }
+      return [item];
+    });
+    setIsActionModalOpen(true);
+  };
+
+  const handleToggleSelectGift = (item: TableItem) => {
+    setSelectedGiftItems((prev) => {
+      const exists = prev.some((it) => it.id === item.id);
+      if (exists) {
+        return prev.filter((it) => it.id !== item.id);
+      } else {
+        return [...prev, item];
+      }
+    });
+  };
 
   useEffect(() => {
     if (!slug) return;
@@ -246,7 +271,9 @@ export const PublicMesaView: React.FC<PublicMesaViewProps> = ({
               key={item.id}
               item={item}
               currencySymbol={storeConfig.currencySymbol}
-              onSelectGift={(selected) => setSelectedGiftItem(selected)}
+              isSelected={selectedGiftItems.some((si) => si.id === item.id)}
+              onToggleSelect={handleToggleSelectGift}
+              onSelectGift={handleSelectGiftSingle}
             />
           ))}
         </div>
@@ -259,16 +286,54 @@ export const PublicMesaView: React.FC<PublicMesaViewProps> = ({
         tableName={table.familyName}
       />
 
+      {/* Floating Multi-Gift Selection Bar */}
+      {selectedGiftItems.length > 0 && !isActionModalOpen && (
+        <div className="fixed bottom-4 inset-x-4 max-w-xl mx-auto z-40 bg-[#4A4E69] text-white p-3.5 sm:p-4 rounded-2xl sm:rounded-3xl shadow-2xl border border-white/20 flex items-center justify-between gap-3 animate-in slide-in-from-bottom-5 duration-200">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="px-2.5 py-0.5 rounded-full bg-[#E58C8A] text-white text-[11px] font-bold shadow-2xs">
+                {selectedGiftItems.length} {selectedGiftItems.length === 1 ? 'regalo seleccionado' : 'regalos seleccionados'}
+              </span>
+              <span className="font-extrabold text-sm text-[#FFEAA7]">
+                {storeConfig.currencySymbol}
+                {selectedGiftItems.reduce((acc, it) => acc + it.price, 0).toFixed(2)}
+              </span>
+            </div>
+            <p className="text-[11px] text-gray-300 truncate mt-0.5">
+              {selectedGiftItems.map((g) => g.name).join(', ')}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => setSelectedGiftItems([])}
+              className="px-2.5 sm:px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold text-gray-200 transition-colors cursor-pointer"
+            >
+              Limpiar
+            </button>
+            <button
+              id="btn-open-multi-gift-modal"
+              onClick={() => setIsActionModalOpen(true)}
+              className="px-3 sm:px-4 py-2 rounded-xl bg-gradient-to-r from-[#E58C8A] to-[#F48B7A] text-white font-bold text-xs shadow-md hover:brightness-105 active:scale-95 transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <Heart className="w-3.5 h-3.5 fill-white" />
+              <span>Regalar ({selectedGiftItems.length})</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Gift Action Modal (Pagar en tienda vs Pagar con tarjeta) */}
       <GiftActionModal
-        isOpen={!!selectedGiftItem}
-        onClose={() => setSelectedGiftItem(null)}
-        item={selectedGiftItem}
+        isOpen={isActionModalOpen}
+        onClose={() => setIsActionModalOpen(false)}
+        items={selectedGiftItems}
+        availableItems={items}
         table={table}
         storeConfig={storeConfig}
         onSuccess={() => {
-          // El listener en tiempo real de Firestore actualiza automáticamente la vista
-          setSelectedGiftItem(null);
+          setSelectedGiftItems([]);
+          setIsActionModalOpen(false);
         }}
       />
     </div>

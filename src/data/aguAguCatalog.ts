@@ -265,7 +265,3 @@ export const OFFICIAL_AGU_AGU_EXTRAS: Omit<ExtraProduct, 'id'>[] = [
     createdAt: new Date().toISOString(),
   },
 ];
-
-// Re-export aliases for backwards compatibility
-export const OFFICIAL_BABY_UZI_PRODUCTS = OFFICIAL_AGU_AGU_PRODUCTS;
-export const OFFICIAL_BABY_UZI_EXTRAS = OFFICIAL_AGU_AGU_EXTRAS;

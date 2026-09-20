@@ -1,37 +1,35 @@
 /**
  * ==============================================================================
- * MÓDULO DE PROCESAMIENTO DE PAGOS / INTENCIONES DE PAGO CON TARJETA
+ * MÓDULO DE PROCESAMIENTO DE PAGOS Y MENSAJES FORMALES DE WHATSAPP
  * ==============================================================================
  * 
- * Este módulo centraliza la lógica cuando un invitado selecciona la opción
- * "Pagar con tarjeta" en la mesa de regalo.
- * 
- * IMPLEMENTACIÓN ACTUAL:
- * - Sanitiza los datos del donante y producto.
- * - Genera un enlace a WhatsApp (https://wa.me/...) con un mensaje pre-llenado
- *   dirigido a la tienda con los detalles del donante, nombre de la mesa y regalo.
- * - Abre el enlace en una nueva pestaña para coordinar el pago/enlace de cobro.
- * - Devuelve el resultado de la operación para que el estado del producto pase a 'seleccionado'.
- * 
- * 🚀 CÓMO REEMPLAZAR ESTO POR UNA CLOUD FUNCTION / PASARELA DE PAGO (WOMPI / STRIPE / OTRO):
- * - Para conectar Wompi u otra pasarela en el futuro, no es necesario tocar las vistas (UI).
- * - Solo modifica la función `processCardPaymentIntent` en este archivo:
- *   1. Llama a tu endpoint de Cloud Function (ej: POST /api/create-wompi-checkout)
- *   2. Obtén el checkoutUrl generado con el monto exacto y referencia única.
- *   3. Redirige al usuario a `checkoutUrl` o abre el widget de pago.
- *   4. La Cloud Function mediante webhook actualizará el estado de Firestore a 'pagado'.
+ * Reglas de Mensajería:
+ * - Redacción formal, clara y estrictamente profesional.
+ * - Sin emojis en ninguna sección del mensaje.
+ * - Estructura ordenada con cantidades, precios individuales y total general.
+ * - Compatibilidad total con móviles (Android, iOS y navegadores web)
+ *   utilizando https://api.whatsapp.com/send con codificación URI precisa.
  * ==============================================================================
  */
+
+export interface SelectedGiftItemInfo {
+  name: string;
+  price: number;
+  quantity?: number;
+}
 
 export interface CardPaymentParams {
   donorName: string;
   donorPhone?: string;
   tableName: string;
-  tableSlug: string;
-  productName: string;
-  productPrice: number;
+  tableSlug?: string;
+  tableId?: string;
+  productName?: string;
+  productPrice?: number;
+  items?: SelectedGiftItemInfo[];
+  totalPrice?: number;
   currencySymbol?: string;
-  whatsappNumber: string; // Número telefónico de la tienda configurado en Firestore
+  whatsappNumber: string;
   storeName?: string;
   donorMessage?: string;
 }
@@ -40,9 +38,12 @@ export interface StoreReservationParams {
   donorName: string;
   donorPhone: string;
   tableName: string;
-  tableSlug: string;
-  productName: string;
-  productPrice: number;
+  tableSlug?: string;
+  tableId?: string;
+  productName?: string;
+  productPrice?: number;
+  items?: SelectedGiftItemInfo[];
+  totalPrice?: number;
   currencySymbol?: string;
   whatsappNumber: string;
   storeName?: string;
@@ -58,13 +59,12 @@ export interface PaymentIntentResult {
 }
 
 /**
- * Limpia y formatea un número de teléfono para enlaces de WhatsApp (solo dígitos).
- * Por defecto usa el número oficial configurado en El Salvador: +503 6868 7046.
+ * Limpia y formatea un número telefónico para WhatsApp (solo dígitos numéricos).
+ * Por defecto utiliza el número oficial de El Salvador: 50368687046.
  */
 export function sanitizeWhatsAppNumber(rawNumber?: string): string {
   if (!rawNumber) return '50368687046';
   const digits = rawNumber.replace(/[^\d]/g, '');
-  // Si quedó vacío o contiene placeholders anteriores de prueba
   if (!digits || digits === '50212345678' || digits === '50370000000' || digits === '50363031927') {
     return '50368687046';
   }
@@ -72,7 +72,36 @@ export function sanitizeWhatsAppNumber(rawNumber?: string): string {
 }
 
 /**
- * Genera el enlace y mensaje de WhatsApp para dar seguimiento a una reserva física en tienda.
+ * Construye una URL universal de WhatsApp compatible con Android, iOS y navegadores de escritorio.
+ * Maneja saltos de línea y espacios con codificación estricta encodeURIComponent.
+ */
+export function buildUniversalWhatsAppUrl(phoneNumber: string, messageText: string): string {
+  const cleanDigits = sanitizeWhatsAppNumber(phoneNumber);
+  const encodedText = encodeURIComponent(messageText);
+  return `https://api.whatsapp.com/send?phone=${cleanDigits}&text=${encodedText}`;
+}
+
+/**
+ * Abre de forma segura el enlace de WhatsApp según el dispositivo del usuario.
+ */
+export function openWhatsAppSafely(whatsappUrl: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+      // En móviles, window.location.href activa el intent de la app nativa de forma fiable
+      window.location.href = whatsappUrl;
+    } else {
+      window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
+    }
+  } catch (err) {
+    console.warn('Error al abrir WhatsApp:', err);
+  }
+}
+
+/**
+ * Genera el mensaje y enlace formal de WhatsApp para reserva en tienda física.
+ * Estrictamente sin emojis, con desglose de regalos, cantidades, precios y total.
  */
 export async function processStoreReservationIntent(
   params: StoreReservationParams
@@ -81,66 +110,90 @@ export async function processStoreReservationIntent(
     donorName,
     donorPhone,
     tableName,
+    tableSlug,
+    tableId,
     productName,
     productPrice,
+    items,
+    totalPrice: explicitTotal,
     currencySymbol = '$',
     whatsappNumber,
-    storeName = 'Agu Agu - Artículos de Bebé',
     donorMessage,
   } = params;
 
   const referenceId = `TIENDA-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-  const cleanPhone = sanitizeWhatsAppNumber(whatsappNumber);
-  const formattedPrice = `${currencySymbol}${productPrice.toFixed(2)}`;
 
-  const lines = [
-    `👶 *¡Hola ${storeName}!* He apartado un regalo en tienda de la *Mesa de Regalo*.`,
-    ``,
-    `📋 *Detalles de la Reserva:*`,
-    `• *Mesa / Familia:* ${tableName}`,
-    `• *Producto:* ${productName}`,
-    `• *Valor:* ${formattedPrice}`,
-    `• *Código de Reserva:* ${referenceId}`,
-    ``,
-    `🎁 *Datos de Quien Reserva:*`,
-    `• *Nombre:* ${donorName.trim()}`,
-    `• *Teléfono:* ${donorPhone.trim()}`,
-    donorMessage?.trim() ? `• *Mensaje a la familia:* "${donorMessage.trim()}"` : null,
-    ``,
-    `🏪 *Modalidad:* Pagar y retirar en tienda física.`,
-    `💬 Por favor confirmarme para pasar a pagar a la tienda. ¡Muchas gracias!`,
-  ].filter(Boolean);
-
-  const fullMessage = lines.join('\n');
-  const encodedText = encodeURIComponent(fullMessage);
-  const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodedText}`;
-
-  try {
-    if (typeof window !== 'undefined') {
-      window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
-    }
-
-    return {
-      success: true,
-      actionType: 'whatsapp_redirect',
-      redirectUrl: whatsappUrl,
-      referenceId,
-      message: 'Redirigiendo a WhatsApp para dar seguimiento a la reserva en tienda...',
-    };
-  } catch (error) {
-    console.error('Error al abrir WhatsApp para reserva en tienda:', error);
-    return {
-      success: true,
-      actionType: 'whatsapp_redirect',
-      redirectUrl: whatsappUrl,
-      referenceId,
-      message: 'Reserva guardada. Puedes hacer clic en el botón de WhatsApp para notificar a la tienda.',
-    };
+  // Consolidar lista de regalos
+  const giftList: SelectedGiftItemInfo[] = [];
+  if (items && items.length > 0) {
+    giftList.push(...items);
+  } else if (productName && productPrice !== undefined) {
+    giftList.push({ name: productName, price: productPrice, quantity: 1 });
   }
+
+  const calculatedTotal = explicitTotal !== undefined
+    ? explicitTotal
+    : giftList.reduce((acc, g) => acc + g.price * (g.quantity || 1), 0);
+
+  const mesaIdentifier = tableSlug ? `${tableName} (#mesa/${tableSlug})` : tableName;
+
+  // Construcción del mensaje formal (SIN EMOJIS)
+  const lines: (string | null)[] = [
+    `Estimado equipo de Agu Agu,`,
+    ``,
+    `Le saluda ${donorName.trim()}. Deseo confirmar la reserva en tienda física de regalo(s) correspondiente a la siguiente mesa de regalos:`,
+    ``,
+    `Mesa / Evento: ${mesaIdentifier}`,
+    `Modalidad: Pago y retiro en tienda física`,
+    ``,
+    `Detalle de regalo(s) seleccionado(s):`,
+  ];
+
+  giftList.forEach((gift, idx) => {
+    const qty = gift.quantity || 1;
+    const subtotal = (gift.price * qty).toFixed(2);
+    lines.push(`- ${gift.name} | Cantidad: ${qty} | Precio: ${currencySymbol}${subtotal}`);
+  });
+
+  lines.push(
+    ``,
+    `Total a cancelar en tienda: ${currencySymbol}${calculatedTotal.toFixed(2)}`,
+    `Codigo de referencia: ${referenceId}`,
+    ``,
+    `Datos de contacto de quien reserva:`,
+    `- Nombre: ${donorName.trim()}`,
+    `- Telefono: ${donorPhone.trim()}`
+  );
+
+  if (donorMessage?.trim()) {
+    lines.push(`- Mensaje para la familia: "${donorMessage.trim()}"`);
+  }
+
+  lines.push(
+    ``,
+    `Agradezco me confirmen la disponibilidad del pedido y los pasos para presentarme a realizar el pago en tienda.`,
+    ``,
+    `Atentamente,`,
+    `${donorName.trim()}`
+  );
+
+  const fullMessage = lines.filter((l) => l !== null).join('\n');
+  const whatsappUrl = buildUniversalWhatsAppUrl(whatsappNumber, fullMessage);
+
+  openWhatsAppSafely(whatsappUrl);
+
+  return {
+    success: true,
+    actionType: 'whatsapp_redirect',
+    redirectUrl: whatsappUrl,
+    referenceId,
+    message: 'Redirigiendo a WhatsApp para dar seguimiento a la reserva en tienda.',
+  };
 }
 
 /**
- * Procesa la intención de pago con tarjeta del donante.
+ * Genera el mensaje y enlace formal de WhatsApp para pago con tarjeta.
+ * Estrictamente sin emojis, con desglose de regalos, cantidades, precios y total.
  */
 export async function processCardPaymentIntent(
   params: CardPaymentParams
@@ -152,66 +205,79 @@ export async function processCardPaymentIntent(
     tableSlug,
     productName,
     productPrice,
+    items,
+    totalPrice: explicitTotal,
     currencySymbol = '$',
     whatsappNumber,
-    storeName = 'Agu Agu - Artículos de Bebé',
     donorMessage,
   } = params;
 
-  // Generamos un ID de referencia amigable para seguimiento
   const referenceId = `REG-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
 
-  // --------------------------------------------------------------------------
-  // INTEGRACIÓN ACTUAL: Enlace a WhatsApp
-  // --------------------------------------------------------------------------
-  const cleanPhone = sanitizeWhatsAppNumber(whatsappNumber);
-  
-  const formattedPrice = `${currencySymbol}${productPrice.toFixed(2)}`;
-  
-  // Construcción del mensaje prellenado
-  const lines = [
-    `👶 *¡Hola ${storeName}!* Quisiera pagar con tarjeta un regalo de la *Mesa de Regalo*.`,
-    ``,
-    `📋 *Detalles del Regalo:*`,
-    `• *Mesa / Familia:* ${tableName}`,
-    `• *Producto:* ${productName}`,
-    `• *Valor:* ${formattedPrice}`,
-    `• *Referencia:* ${referenceId}`,
-    ``,
-    `🎁 *Mis Datos (Donante):*`,
-    `• *Nombre:* ${donorName.trim()}`,
-    donorPhone ? `• *Teléfono:* ${donorPhone.trim()}` : null,
-    donorMessage?.trim() ? `• *Mensaje a la familia:* "${donorMessage.trim()}"` : null,
-    ``,
-    `💳 *Solicitud:* Por favor envíenme el enlace para realizar el pago con tarjeta. ¡Muchas gracias!`,
-  ].filter(Boolean);
-
-  const fullMessage = lines.join('\n');
-  const encodedText = encodeURIComponent(fullMessage);
-  const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodedText}`;
-
-  try {
-    // Abrir WhatsApp en una nueva pestaña
-    if (typeof window !== 'undefined') {
-      window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
-    }
-
-    return {
-      success: true,
-      actionType: 'whatsapp_redirect',
-      redirectUrl: whatsappUrl,
-      referenceId,
-      message: 'Redirigiendo a WhatsApp para coordinar el pago con tarjeta...',
-    };
-  } catch (error) {
-    console.error('Error al abrir WhatsApp:', error);
-    return {
-      success: true, // Aún devolvemos true para que la UI muestre el link en caso de popup bloqueado
-      actionType: 'whatsapp_redirect',
-      redirectUrl: whatsappUrl,
-      referenceId,
-      message: 'Por favor haz clic en el botón de WhatsApp si no se abrió automáticamente.',
-    };
+  // Consolidar lista de regalos
+  const giftList: SelectedGiftItemInfo[] = [];
+  if (items && items.length > 0) {
+    giftList.push(...items);
+  } else if (productName && productPrice !== undefined) {
+    giftList.push({ name: productName, price: productPrice, quantity: 1 });
   }
-}
 
+  const calculatedTotal = explicitTotal !== undefined
+    ? explicitTotal
+    : giftList.reduce((acc, g) => acc + g.price * (g.quantity || 1), 0);
+
+  const mesaIdentifier = tableSlug ? `${tableName} (#mesa/${tableSlug})` : tableName;
+
+  // Construcción del mensaje formal (SIN EMOJIS)
+  const lines: (string | null)[] = [
+    `Estimado equipo de Agu Agu,`,
+    ``,
+    `Le saluda ${donorName.trim()}. Deseo realizar el pago con tarjeta para el/los siguiente(s) regalo(s) de la mesa de regalos:`,
+    ``,
+    `Mesa / Evento: ${mesaIdentifier}`,
+    `Modalidad: Pago con tarjeta de credito / debito`,
+    ``,
+    `Detalle de regalo(s) seleccionado(s):`,
+  ];
+
+  giftList.forEach((gift) => {
+    const qty = gift.quantity || 1;
+    const subtotal = (gift.price * qty).toFixed(2);
+    lines.push(`- ${gift.name} | Cantidad: ${qty} | Precio: ${currencySymbol}${subtotal}`);
+  });
+
+  lines.push(
+    ``,
+    `Total a pagar: ${currencySymbol}${calculatedTotal.toFixed(2)}`,
+    `Codigo de referencia: ${referenceId}`,
+    ``,
+    `Datos de contacto:`,
+    `- Nombre: ${donorName.trim()}`,
+    donorPhone?.trim() ? `- Telefono: ${donorPhone.trim()}` : null
+  );
+
+  if (donorMessage?.trim()) {
+    lines.push(`- Mensaje para la familia: "${donorMessage.trim()}"`);
+  }
+
+  lines.push(
+    ``,
+    `Solicito amablemente me proporcionen el enlace de cobro para efectuar la transaccion.`,
+    ``,
+    `Atentamente,`,
+    `${donorName.trim()}`
+  );
+
+  const fullMessage = lines.filter((l) => l !== null).join('\n');
+  const whatsappUrl = buildUniversalWhatsAppUrl(whatsappNumber, fullMessage);
+
+  openWhatsAppSafely(whatsappUrl);
+
+  return {
+    success: true,
+    actionType: 'whatsapp_redirect',
+    redirectUrl: whatsappUrl,
+    referenceId,
+    message: 'Redirigiendo a WhatsApp para coordinar el pago con tarjeta.',
+  };
+}

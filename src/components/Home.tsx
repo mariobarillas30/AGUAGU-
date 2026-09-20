@@ -46,7 +46,7 @@ export const Home: React.FC<HomeProps> = ({ onNavigate }) => {
             <AguAguLogo size="xl" showText={false} className="shadow-md rounded-3xl" />
           </div>
 
-          {/* Boutique Tag */}
+          {/* Tag */}
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-[#FDFBF7] border border-pink-100 text-[#FF8B8B] text-xs font-extrabold shadow-2xs mb-6">
             <Heart className="w-4 h-4 fill-[#FF8B8B]" />
             <span>Agu Agu • Servicio Exclusivo de Mesa de Regalos</span>
@@ -95,10 +95,10 @@ export const Home: React.FC<HomeProps> = ({ onNavigate }) => {
             </p>
           </div>
 
-          {/* Boutique Privacy Badge */}
+          {/* Privacy Badge */}
           <div className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl bg-[#FAF7F2] border border-[#E2D9CF] text-xs text-[#6C7086]">
             <ShieldCheck className="w-4 h-4 text-[#00897B]" />
-            <span>Mesa de regalos gestionada exclusivamente en Boutique Agu Agu</span>
+            <span>Mesa de regalos gestionada exclusivamente en Agu Agu</span>
           </div>
         </div>
       </div>

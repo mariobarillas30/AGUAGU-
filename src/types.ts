@@ -52,7 +52,9 @@ export interface GiftTable {
   id: string;
   familyName: string;
   babyName?: string;
+  gender?: string; // e.g. 'Niño', 'Niña', 'Por revelar', 'No especificado'
   eventDate: string; // YYYY-MM-DD
+  eventTime?: string; // e.g. '15:00' o '03:00 PM'
   slug: string;
   greeting?: string;
   coverImage?: string;
@@ -78,5 +80,26 @@ export interface StoreConfig {
   storeName: string;
   storeAddress?: string;
   currencySymbol: string; // ej: "$" o "Q" o "€"
+  logoUrl?: string; // Logotipo oficial personalizado de la tienda
   customWhatsAppTemplate?: string;
+}
+
+export interface DeletedGiftTable {
+  id: string; // ID original de la mesa
+  familyName: string;
+  babyName?: string;
+  gender?: string;
+  eventDate: string;
+  eventTime?: string;
+  slug: string;
+  greeting?: string;
+  coverImage?: string;
+  createdAt: string | number;
+  deletedAt: string; // Fecha y hora en que fue enviada a la papelera (ISO string)
+  expiresAt: string; // Fecha límite de retención (~15 días posteriores, ISO string)
+  deletedBy?: string;
+  itemCount: number;
+  completedCount: number;
+  items: TableItem[]; // Subcolección table_items completa con estados y reservas
+  originalTableData?: Partial<GiftTable>;
 }

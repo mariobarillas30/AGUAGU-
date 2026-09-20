@@ -15,7 +15,7 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 import { db, auth } from '../firebase/config';
-import { Product, GiftTable, TableItem, ExtraProduct, StoreConfig, ItemStatus, ReserveItemResult } from '../types';
+import { Product, GiftTable, TableItem, ExtraProduct, StoreConfig, ItemStatus, ReserveItemResult, DeletedGiftTable } from '../types';
 import {
   OFFICIAL_AGU_AGU_PRODUCTS,
   OFFICIAL_AGU_AGU_EXTRAS,
@@ -80,6 +80,7 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 const PRODUCTS_COLLECTION = 'products';
 const GIFT_TABLES_COLLECTION = 'gift_tables';
 const TABLE_ITEMS_SUBCOLLECTION = 'table_items';
+const DELETED_GIFT_TABLES_COLLECTION = 'deleted_gift_tables';
 const EXTRA_PRODUCTS_COLLECTION = 'extra_products';
 const CONFIG_COLLECTION = 'config';
 const STORE_CONFIG_DOC = 'store_settings';
@@ -90,6 +91,7 @@ export const DEFAULT_STORE_CONFIG: StoreConfig = {
   storeName: 'Agu Agu - Artículos de Bebé',
   storeAddress: 'Tienda Oficial Agu Agu',
   currencySymbol: '$',
+  logoUrl: '',
 };
 
 // -----------------------------------------------------------------------------
@@ -163,6 +165,57 @@ export async function addProduct(product: Omit<Product, 'id'>): Promise<string> 
 }
 
 /**
+ * Agrega un lote de productos al inventario general usando writeBatch de Firestore
+ * con soporte para lotes fragmentados (máx 100 docs por batch) y fallback individual.
+ */
+export async function addProductsBatch(
+  newProducts: Omit<Product, 'id'>[],
+  onProgress?: (processed: number, total: number) => void
+): Promise<{ addedCount: number; ids: string[] }> {
+  if (!newProducts || newProducts.length === 0) {
+    return { addedCount: 0, ids: [] };
+  }
+
+  const coll = collection(db, PRODUCTS_COLLECTION);
+  const ids: string[] = [];
+  const chunkSize = 100;
+
+  for (let i = 0; i < newProducts.length; i += chunkSize) {
+    const chunk = newProducts.slice(i, i + chunkSize);
+    const batch = writeBatch(db);
+    const chunkIds: string[] = [];
+
+    for (const item of chunk) {
+      const newDocRef = doc(coll);
+      chunkIds.push(newDocRef.id);
+      batch.set(newDocRef, {
+        ...item,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    try {
+      await withTimeout(batch.commit(), 9000, 'TIMEOUT_BATCH_COMMIT');
+      ids.push(...chunkIds);
+    } catch (err) {
+      console.warn('Batch commit falló o superó el tiempo límite, insertando de forma individual:', err);
+      for (const item of chunk) {
+        try {
+          const singleId = await addProduct(item);
+          ids.push(singleId);
+        } catch (singleErr) {
+          console.error('Error insertando producto individual en fallback:', singleErr);
+        }
+      }
+    }
+
+    onProgress?.(Math.min(i + chunkSize, newProducts.length), newProducts.length);
+  }
+
+  return { addedCount: ids.length, ids };
+}
+
+/**
  * Normaliza cadenas para comparación flexible (sin acentos, minúsculas, sin puntuación)
  */
 export function normalizeText(text: string): string {
@@ -216,121 +269,19 @@ export function areProductsMatching(
 }
 
 /**
- * Sincroniza todas las mesas de regalo y sus productos con el inventario principal
+ * Desactivado permanentemente según requerimiento de la tienda.
+ * El inventario se gestiona de forma manual y no se realizan sincronizaciones automáticas.
  */
 export async function syncAllTablesWithInventory(): Promise<void> {
-  try {
-    const [productsSnap, tablesSnap] = await Promise.all([
-      getDocs(collection(db, PRODUCTS_COLLECTION)),
-      getDocs(collection(db, GIFT_TABLES_COLLECTION)),
-    ]);
-
-    const prods = productsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Product) }));
-
-    for (const tableDoc of tablesSnap.docs) {
-      const itemsColl = collection(db, GIFT_TABLES_COLLECTION, tableDoc.id, TABLE_ITEMS_SUBCOLLECTION);
-      const itemsSnap = await getDocs(itemsColl);
-
-      for (const itemDoc of itemsSnap.docs) {
-        const itemData = itemDoc.data() as TableItem;
-        const matchedProd = prods.find(
-          (p) =>
-            itemData.productId === p.id ||
-            areProductsMatching(p.name, itemData.name, p.description, itemData.description)
-        );
-
-        if (matchedProd) {
-          const itemUpdate: Partial<TableItem> = {
-            productId: matchedProd.id,
-          };
-
-          let hasChanges = false;
-          if (matchedProd.imageUrl && matchedProd.imageUrl !== itemData.imageUrl) {
-            itemUpdate.imageUrl = matchedProd.imageUrl;
-            hasChanges = true;
-          }
-          if (
-            matchedProd.images &&
-            matchedProd.images.length > 0 &&
-            JSON.stringify(matchedProd.images) !== JSON.stringify(itemData.images)
-          ) {
-            itemUpdate.images = matchedProd.images;
-            hasChanges = true;
-          }
-          if (matchedProd.name && matchedProd.name !== itemData.name) {
-            itemUpdate.name = matchedProd.name;
-            hasChanges = true;
-          }
-          if (matchedProd.description && matchedProd.description !== itemData.description) {
-            itemUpdate.description = matchedProd.description;
-            hasChanges = true;
-          }
-          if (matchedProd.price && matchedProd.price !== itemData.price) {
-            itemUpdate.price = matchedProd.price;
-            hasChanges = true;
-          }
-
-          if (hasChanges) {
-            await updateDoc(
-              doc(db, GIFT_TABLES_COLLECTION, tableDoc.id, TABLE_ITEMS_SUBCOLLECTION, itemDoc.id),
-              itemUpdate
-            );
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.error('Error en syncAllTablesWithInventory:', err);
-  }
+  return Promise.resolve();
 }
 
 /**
- * Sincroniza todos los productos extra (Detalles Especiales) con el inventario principal
+ * Desactivado permanentemente según requerimiento de la tienda.
+ * El inventario se gestiona de forma manual y no se realizan sincronizaciones automáticas.
  */
 export async function syncAllExtrasWithInventory(): Promise<void> {
-  try {
-    const [productsSnap, extrasSnap] = await Promise.all([
-      getDocs(collection(db, PRODUCTS_COLLECTION)),
-      getDocs(collection(db, EXTRA_PRODUCTS_COLLECTION)),
-    ]);
-
-    const prods = productsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Product) }));
-
-    for (const extraDoc of extrasSnap.docs) {
-      const extraData = extraDoc.data() as ExtraProduct;
-      const matchedProd = prods.find(
-        (p) =>
-          extraData.originalProductId === p.id ||
-          areProductsMatching(p.name, extraData.name, p.description, extraData.description)
-      );
-
-      if (matchedProd) {
-        const extraUpdate: Partial<ExtraProduct> = {
-          originalProductId: matchedProd.id,
-        };
-
-        let hasChanges = false;
-        if (matchedProd.imageUrl && matchedProd.imageUrl !== extraData.imageUrl) {
-          extraUpdate.imageUrl = matchedProd.imageUrl;
-          hasChanges = true;
-        }
-        if (
-          matchedProd.images &&
-          matchedProd.images.length > 0 &&
-          JSON.stringify(matchedProd.images) !== JSON.stringify(extraData.images)
-        ) {
-          extraUpdate.images = matchedProd.images;
-          hasChanges = true;
-        }
-
-        if (hasChanges) {
-          await updateDoc(doc(db, EXTRA_PRODUCTS_COLLECTION, extraDoc.id), extraUpdate);
-        }
-      }
-    }
-  } catch (err) {
-    console.error('Error en syncAllExtrasWithInventory:', err);
-  }
+  return Promise.resolve();
 }
 
 export async function updateProduct(id: string, product: Partial<Product>): Promise<void> {
@@ -340,79 +291,6 @@ export async function updateProduct(id: string, product: Partial<Product>): Prom
     updateDoc(docRef, product),
     new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT_UPDATE_DOC')), 4000)),
   ]).catch((err) => console.warn('Aviso en updateDoc Firestore:', err));
-
-  // Sincronización secundaria en segundo plano (NO bloquea la respuesta al usuario ni la UI)
-  (async () => {
-    try {
-      const fullProdSnap = await getDoc(docRef);
-      const currentProd = fullProdSnap.exists() ? (fullProdSnap.data() as Product) : null;
-      const prodName = product.name || currentProd?.name || '';
-      const prodDesc = product.description || currentProd?.description;
-      const finalImageUrl = product.imageUrl || currentProd?.imageUrl;
-      const finalImages = product.images || currentProd?.images;
-
-      const extrasColl = collection(db, EXTRA_PRODUCTS_COLLECTION);
-      const extrasSnap = await getDocs(extrasColl);
-      const extrasBatch = writeBatch(db);
-      let extrasChanged = false;
-
-      for (const extraDoc of extrasSnap.docs) {
-        const extraData = extraDoc.data() as ExtraProduct;
-        const isMatch =
-          extraData.originalProductId === id ||
-          areProductsMatching(prodName, extraData.name, prodDesc, extraData.description);
-
-        if (isMatch) {
-          const extraUpdate: Partial<ExtraProduct> = {
-            originalProductId: id,
-          };
-
-          if (finalImageUrl) extraUpdate.imageUrl = finalImageUrl;
-          if (finalImages && finalImages.length > 0) extraUpdate.images = finalImages;
-          if (product.price && extraData.price === currentProd?.price) extraUpdate.price = product.price;
-
-          extrasBatch.update(doc(db, EXTRA_PRODUCTS_COLLECTION, extraDoc.id), extraUpdate);
-          extrasChanged = true;
-        }
-      }
-      if (extrasChanged) {
-        await extrasBatch.commit();
-      }
-
-      // Sincronización con mesas de regalos activas
-      const tablesColl = collection(db, GIFT_TABLES_COLLECTION);
-      const tablesSnap = await getDocs(tablesColl);
-      const tablesBatch = writeBatch(db);
-      let tablesChanged = false;
-
-      for (const tDoc of tablesSnap.docs) {
-        const itemsColl = collection(db, GIFT_TABLES_COLLECTION, tDoc.id, TABLE_ITEMS_SUBCOLLECTION);
-        const itemsSnap = await getDocs(itemsColl);
-        for (const iDoc of itemsSnap.docs) {
-          const iData = iDoc.data() as TableItem;
-          if (iData.productId === id || (product.name && areProductsMatching(product.name, iData.name))) {
-            const itemUpdate: Partial<TableItem> = {};
-            if (product.imageUrl) itemUpdate.imageUrl = product.imageUrl;
-            if (product.images && product.images.length > 0) itemUpdate.images = product.images;
-            if (product.price) itemUpdate.price = product.price;
-            if (product.name) itemUpdate.name = product.name;
-            if (product.description) itemUpdate.description = product.description;
-
-            tablesBatch.update(
-              doc(db, GIFT_TABLES_COLLECTION, tDoc.id, TABLE_ITEMS_SUBCOLLECTION, iDoc.id),
-              itemUpdate
-            );
-            tablesChanged = true;
-          }
-        }
-      }
-      if (tablesChanged) {
-        await tablesBatch.commit();
-      }
-    } catch (syncErr) {
-      console.warn('Aviso en sincronización en segundo plano:', syncErr);
-    }
-  })().catch(() => {});
 }
 
 /**
@@ -488,9 +366,6 @@ export async function deleteProduct(
 // -----------------------------------------------------------------------------
 export async function getExtraProducts(): Promise<ExtraProduct[]> {
   try {
-    // Sincronizar automáticamente con inventario en segundo plano
-    syncAllExtrasWithInventory().catch(() => {});
-
     const coll = collection(db, EXTRA_PRODUCTS_COLLECTION);
     const snap = await getDocs(coll);
     const items: ExtraProduct[] = [];
@@ -587,9 +462,6 @@ export async function deleteExtraProduct(
 // -----------------------------------------------------------------------------
 export async function getGiftTables(): Promise<GiftTable[]> {
   try {
-    // Sincronizar automáticamente mesas con inventario en segundo plano
-    syncAllTablesWithInventory().catch(() => {});
-
     const coll = collection(db, GIFT_TABLES_COLLECTION);
     const snap = await getDocs(coll);
     const tables: GiftTable[] = [];
@@ -762,7 +634,9 @@ export async function createGiftTable(
   const newTableDoc = await addDoc(tableColl, {
     familyName: tableData.familyName || 'Familia Invitada',
     babyName: tableData.babyName || '',
+    gender: tableData.gender || '',
     eventDate: tableData.eventDate || new Date().toISOString().split('T')[0],
+    eventTime: tableData.eventTime || '',
     greeting: tableData.greeting || '¡Gracias por acompañarnos y celebrar la llegada de nuestro bebé!',
     coverImage: tableData.coverImage || '',
     slug,
@@ -955,6 +829,100 @@ export async function reserveTableItemWithTransaction(
       message: 'Ocurrió un error inesperado al procesar la reserva. Por favor intenta de nuevo.',
     };
   }
+}
+
+/**
+ * Permite que una misma persona reserve dos o más regalos dentro de la misma mesa,
+ * ejecutando para cada regalo la validación atómica y decremento transaccional de inventario
+ * según las reglas de Firestore (control de concurrencia, stock disponible y sin duplicados).
+ */
+export async function reserveMultipleTableItemsWithTransaction(
+  tableId: string,
+  items: TableItem[],
+  targetStatus: 'reservado_en_tienda' | 'seleccionado',
+  donorInfo?: {
+    donorName?: string;
+    donorPhone?: string;
+    paymentMethod?: 'tienda' | 'tarjeta' | 'otro';
+    notes?: string;
+  }
+): Promise<{
+  success: boolean;
+  reservedItems: TableItem[];
+  failedItems: { item: TableItem; reason: string }[];
+  message?: string;
+}> {
+  if (!items || items.length === 0) {
+    return {
+      success: false,
+      reservedItems: [],
+      failedItems: [],
+      message: 'No se seleccionó ningún regalo para reservar.',
+    };
+  }
+
+  const reservedItems: TableItem[] = [];
+  const failedItems: { item: TableItem; reason: string }[] = [];
+
+  // Procesamos de forma secuencial cada item utilizando la transacción atómica individual
+  // para cumplir rigurosamente con la regla de seguridad de Firestore (decremento de 1 por producto por tx)
+  for (const item of items) {
+    const res = await reserveTableItemWithTransaction(tableId, item.id, targetStatus, donorInfo);
+    if (res.success) {
+      reservedItems.push(item);
+    } else {
+      failedItems.push({
+        item,
+        reason: res.message || 'No disponible',
+      });
+    }
+  }
+
+  if (reservedItems.length === items.length) {
+    return {
+      success: true,
+      reservedItems,
+      failedItems: [],
+      message: `${reservedItems.length} regalo(s) reservado(s) exitosamente.`,
+    };
+  }
+
+  if (reservedItems.length > 0) {
+    return {
+      success: true,
+      reservedItems,
+      failedItems,
+      message: `Se reservaron ${reservedItems.length} de ${items.length} regalo(s). Algunos productos ya no estaban disponibles.`,
+    };
+  }
+
+  return {
+    success: false,
+    reservedItems: [],
+    failedItems,
+    message: failedItems[0]?.reason || 'No fue posible reservar los regalos seleccionados.',
+  };
+}
+
+/**
+ * Actualiza campos generales de una mesa de regalos (nombre, fecha, hora, género, saludo, etc.)
+ */
+export async function updateGiftTable(
+  tableId: string,
+  updates: Partial<Omit<GiftTable, 'id' | 'createdAt'>>
+): Promise<void> {
+  const tableRef = doc(db, GIFT_TABLES_COLLECTION, tableId);
+  const cleanUpdates: Record<string, any> = {};
+  if (updates.familyName !== undefined) cleanUpdates.familyName = updates.familyName;
+  if (updates.babyName !== undefined) cleanUpdates.babyName = updates.babyName;
+  if (updates.gender !== undefined) cleanUpdates.gender = updates.gender;
+  if (updates.eventDate !== undefined) cleanUpdates.eventDate = updates.eventDate;
+  if (updates.eventTime !== undefined) cleanUpdates.eventTime = updates.eventTime;
+  if (updates.greeting !== undefined) cleanUpdates.greeting = updates.greeting;
+  if (updates.coverImage !== undefined) cleanUpdates.coverImage = updates.coverImage;
+  if (updates.slug !== undefined) cleanUpdates.slug = updates.slug;
+
+  await updateDoc(tableRef, cleanUpdates);
 }
 
 /**
@@ -1151,12 +1119,14 @@ export function subscribeToAdminData(
   onUpdate: (data: {
     products: Product[];
     tables: GiftTable[];
+    deletedTables: DeletedGiftTable[];
     extras: ExtraProduct[];
     storeConfig: StoreConfig;
   }) => void
 ): () => void {
   let liveProducts: Product[] = [];
   let liveTables: GiftTable[] = [];
+  let liveDeletedTables: DeletedGiftTable[] = [];
   let liveExtras: ExtraProduct[] = [];
   let liveConfig: StoreConfig = DEFAULT_STORE_CONFIG;
 
@@ -1164,6 +1134,7 @@ export function subscribeToAdminData(
     onUpdate({
       products: liveProducts,
       tables: liveTables,
+      deletedTables: liveDeletedTables,
       extras: liveExtras,
       storeConfig: liveConfig,
     });
@@ -1207,6 +1178,15 @@ export function subscribeToAdminData(
     console.warn('Listener error on gift_tables:', err);
   });
 
+  const unsubDeletedTables = onSnapshot(collection(db, DELETED_GIFT_TABLES_COLLECTION), (snap) => {
+    liveDeletedTables = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() } as DeletedGiftTable))
+      .sort((a, b) => new Date(b.deletedAt || 0).getTime() - new Date(a.deletedAt || 0).getTime());
+    emit();
+  }, (err) => {
+    console.warn('Listener error on deleted_gift_tables:', err);
+  });
+
   const unsubExtras = onSnapshot(collection(db, EXTRA_PRODUCTS_COLLECTION), (snap) => {
     liveExtras = snap.docs.map((d) => ({ id: d.id, ...(d.data() as ExtraProduct) }));
     emit();
@@ -1226,6 +1206,7 @@ export function subscribeToAdminData(
   return () => {
     unsubProducts();
     unsubTables();
+    unsubDeletedTables();
     unsubExtras();
     unsubConfig();
   };
@@ -1324,35 +1305,217 @@ export async function markItemAsDropped(tableId: string, itemId: string): Promis
   await updateTableItemStatus(tableId, itemId, 'dado_de_baja');
 }
 
-export async function deleteGiftTable(tableId: string): Promise<void> {
+// =============================================================================
+// PAPELERA DE MESAS DE REGALOS (deleted_gift_tables) Y PROTECCIÓN DE DATOS
+// =============================================================================
+
+/**
+ * Mueve una mesa de regalos a la papelera (deleted_gift_tables) con una retención de 15 días.
+ * Conserva el 100% de la información de la mesa, su ID original y todos sus table_items con estados y reservas.
+ * NO toca ni modifica el inventario ni otras mesas de regalo.
+ */
+export async function moveToTrashGiftTable(tableId: string, userEmail?: string): Promise<void> {
   if (!tableId || typeof tableId !== 'string') {
-    throw new Error('ID de mesa inválido para eliminación.');
+    throw new Error('ID de mesa inválido para enviar a la papelera.');
   }
+
+  // 1. Obtener documento principal de la mesa activa
+  const tableRef = doc(db, GIFT_TABLES_COLLECTION, tableId);
+  const tableSnap = await withTimeout(getDoc(tableRef), 5000, 'TIMEOUT_GET_TABLE_DOC');
+  if (!tableSnap.exists()) {
+    throw new Error('La mesa de regalos especificada no existe en la base de datos.');
+  }
+  const tableData = tableSnap.data() as GiftTable;
+
+  // 2. Obtener todos los table_items pertenecientes exclusivamente a esta mesa
+  const itemsColl = collection(db, GIFT_TABLES_COLLECTION, tableId, TABLE_ITEMS_SUBCOLLECTION);
+  const itemsSnap = await withTimeout(getDocs(itemsColl), 5000, 'TIMEOUT_GET_ITEMS');
+  const items: TableItem[] = [];
+  itemsSnap.forEach((d) => {
+    items.push({ id: d.id, tableId, ...d.data() } as TableItem);
+  });
+
+  // 3. Registrar marcas de tiempo y retención de 15 días
+  const now = new Date();
+  const deletedAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + 15 * 24 * 60 * 60 * 1000).toISOString();
+  const completedCount = items.filter(
+    (i) => i.status === 'reservado_en_tienda' || i.status === 'seleccionado' || i.status === 'pagado'
+  ).length;
+
+  const deletedRecord: DeletedGiftTable = {
+    id: tableId,
+    familyName: tableData.familyName || 'Familia Invitada',
+    babyName: tableData.babyName || '',
+    gender: tableData.gender || '',
+    eventDate: tableData.eventDate || '',
+    eventTime: tableData.eventTime || '',
+    slug: tableData.slug || '',
+    greeting: tableData.greeting || '',
+    coverImage: tableData.coverImage || '',
+    createdAt: tableData.createdAt || deletedAt,
+    deletedAt,
+    expiresAt,
+    deletedBy: userEmail || auth.currentUser?.email || 'admin',
+    itemCount: items.length,
+    completedCount,
+    items,
+    originalTableData: tableData,
+  };
+
+  // 4. Mover a la papelera en una sola operación atómica (writeBatch)
+  const batch = writeBatch(db);
+  const trashDocRef = doc(db, DELETED_GIFT_TABLES_COLLECTION, tableId);
+  batch.set(trashDocRef, deletedRecord);
+
+  // Eliminar documentos activos de table_items
+  itemsSnap.forEach((d) => {
+    batch.delete(d.ref);
+  });
+  // Eliminar documento activo principal de gift_tables
+  batch.delete(tableRef);
 
   try {
-    const itemsColl = collection(db, GIFT_TABLES_COLLECTION, tableId, TABLE_ITEMS_SUBCOLLECTION);
-    const itemsSnap = await withTimeout(getDocs(itemsColl), 4000, 'TIMEOUT_GET_ITEMS').catch(() => null);
-
-    const batch = writeBatch(db);
-    if (itemsSnap && !itemsSnap.empty) {
-      itemsSnap.forEach((d: any) => {
-        batch.delete(d.ref);
-      });
+    await withTimeout(batch.commit(), 8000, 'TIMEOUT_MOVE_TO_TRASH_BATCH');
+  } catch (err: any) {
+    console.error('[MOVE TO TRASH ERROR]:', err);
+    if (err?.code === 'permission-denied') {
+      throw new Error('Permisos insuficientes en Firestore para mover esta mesa a la papelera.');
     }
-    batch.delete(doc(db, GIFT_TABLES_COLLECTION, tableId));
-    await withTimeout(batch.commit(), 5000, 'TIMEOUT_BATCH_COMMIT');
-  } catch (err) {
-    console.warn('Aviso al eliminar mesa de regalo en lote, aplicando deleteDoc directo:', err);
-    try {
-      await withTimeout(deleteDoc(doc(db, GIFT_TABLES_COLLECTION, tableId)), 5000, 'TIMEOUT_DELETE_DOC_TABLE');
-    } catch (fallbackErr: any) {
-      console.error('Error al eliminar mesa en Firestore:', fallbackErr);
-      if (fallbackErr?.code === 'permission-denied') {
-        throw new Error('Permisos insuficientes en Firestore para eliminar esta mesa.');
-      }
-      throw new Error(fallbackErr?.message || 'Error al eliminar la mesa de regalos.');
+    throw new Error(err?.message || 'No fue posible mover la mesa a la papelera.');
+  }
+}
+
+/**
+ * Obtiene todas las mesas que se encuentran actualmente en la papelera.
+ */
+export async function getDeletedGiftTables(): Promise<DeletedGiftTable[]> {
+  try {
+    const coll = collection(db, DELETED_GIFT_TABLES_COLLECTION);
+    const snap = await getDocs(coll);
+    const items: DeletedGiftTable[] = [];
+    snap.forEach((d) => {
+      items.push({ id: d.id, ...d.data() } as DeletedGiftTable);
+    });
+    return items.sort((a, b) => new Date(b.deletedAt || 0).getTime() - new Date(a.deletedAt || 0).getTime());
+  } catch (error) {
+    console.error('Error al obtener mesas eliminadas de la papelera:', error);
+    return [];
+  }
+}
+
+/**
+ * Restaura una mesa de la papelera de regreso a su colección principal activa (gift_tables).
+ * Conserva su ID original, todos sus datos y recrea fielmente sus table_items con sus reservas.
+ * No crea duplicados ni modifica otras mesas ni el inventario.
+ */
+export async function restoreGiftTable(tableId: string): Promise<void> {
+  if (!tableId || typeof tableId !== 'string') {
+    throw new Error('ID de mesa inválido para restaurar.');
+  }
+
+  const trashDocRef = doc(db, DELETED_GIFT_TABLES_COLLECTION, tableId);
+  const trashSnap = await withTimeout(getDoc(trashDocRef), 5000, 'TIMEOUT_GET_TRASH_DOC');
+  if (!trashSnap.exists()) {
+    throw new Error('La mesa no fue encontrada en la papelera.');
+  }
+
+  const trashData = trashSnap.data() as DeletedGiftTable;
+  const originalData = trashData.originalTableData || {
+    familyName: trashData.familyName,
+    babyName: trashData.babyName,
+    gender: trashData.gender,
+    eventDate: trashData.eventDate,
+    eventTime: trashData.eventTime,
+    slug: trashData.slug,
+    greeting: trashData.greeting,
+    coverImage: trashData.coverImage,
+    createdAt: trashData.createdAt,
+  };
+
+  const tableRef = doc(db, GIFT_TABLES_COLLECTION, tableId);
+  const batch = writeBatch(db);
+
+  // 1. Recrear documento principal conservando su ID original
+  batch.set(tableRef, {
+    familyName: originalData.familyName || trashData.familyName || 'Familia Invitada',
+    babyName: originalData.babyName || trashData.babyName || '',
+    gender: originalData.gender || trashData.gender || '',
+    eventDate: originalData.eventDate || trashData.eventDate || '',
+    eventTime: originalData.eventTime || trashData.eventTime || '',
+    slug: originalData.slug || trashData.slug || '',
+    greeting: originalData.greeting || trashData.greeting || '',
+    coverImage: originalData.coverImage || trashData.coverImage || '',
+    createdAt: originalData.createdAt || trashData.createdAt || new Date().toISOString(),
+  });
+
+  // 2. Recrear cada table_item en la subcolección con sus datos y reservas originales
+  if (Array.isArray(trashData.items) && trashData.items.length > 0) {
+    for (const item of trashData.items) {
+      const itemDocRef = doc(db, GIFT_TABLES_COLLECTION, tableId, TABLE_ITEMS_SUBCOLLECTION, item.id);
+      const cleanItemData: Record<string, any> = {
+        tableId,
+        productId: item.productId || '',
+        name: item.name || '',
+        description: item.description || '',
+        price: item.price || 0,
+        imageUrl: item.imageUrl || '',
+        images: Array.isArray(item.images) ? item.images : (item.imageUrl ? [item.imageUrl] : []),
+        status: item.status || 'disponible',
+        updatedAt: item.updatedAt || new Date().toISOString(),
+      };
+      if (item.donorName) cleanItemData.donorName = item.donorName;
+      if (item.donorPhone) cleanItemData.donorPhone = item.donorPhone;
+      if (item.donorEmail) cleanItemData.donorEmail = item.donorEmail;
+      if (item.paymentMethod) cleanItemData.paymentMethod = item.paymentMethod;
+      if (item.notes) cleanItemData.notes = item.notes;
+
+      batch.set(itemDocRef, cleanItemData);
     }
   }
+
+  // 3. Eliminar de la papelera
+  batch.delete(trashDocRef);
+
+  try {
+    await withTimeout(batch.commit(), 8000, 'TIMEOUT_RESTORE_BATCH');
+  } catch (err: any) {
+    console.error('[RESTORE TABLE ERROR]:', err);
+    if (err?.code === 'permission-devied') {
+      throw new Error('Permisos insuficientes en Firestore para restaurar esta mesa.');
+    }
+    throw new Error(err?.message || 'No fue posible restaurar la mesa desde la papelera.');
+  }
+}
+
+/**
+ * Elimina definitivamente y de forma permanente una mesa de la papelera de Firestore.
+ * Solo afecta al documento correspondiente en deleted_gift_tables.
+ * NO toca productos, inventario, otras mesas ni reservas ajenas.
+ */
+export async function permanentlyDeleteGiftTable(tableId: string): Promise<void> {
+  if (!tableId || typeof tableId !== 'string') {
+    throw new Error('ID de mesa inválido para eliminación definitiva.');
+  }
+
+  const trashDocRef = doc(db, DELETED_GIFT_TABLES_COLLECTION, tableId);
+  try {
+    await withTimeout(deleteDoc(trashDocRef), 6000, 'TIMEOUT_PERMANENT_DELETE');
+  } catch (err: any) {
+    console.error('[PERMANENT DELETE ERROR]:', err);
+    if (err?.code === 'permission-denied') {
+      throw new Error('Permisos insuficientes en Firestore para eliminar definitivamente esta mesa.');
+    }
+    throw new Error(err?.message || 'Error al eliminar definitivamente la mesa de la papelera.');
+  }
+}
+
+/**
+ * Reemplazado por moveToTrashGiftTable: Al eliminar una mesa desde la UI del administrador,
+ * se mueve a deleted_gift_tables para permitir su recuperación durante 15 días.
+ */
+export async function deleteGiftTable(tableId: string): Promise<void> {
+  return moveToTrashGiftTable(tableId);
 }
 
 // -----------------------------------------------------------------------------
@@ -1365,157 +1528,22 @@ export const AGU_AGU_EXTRAS = OFFICIAL_AGU_AGU_EXTRAS;
 export const BABY_UZI_PRODUCTS = OFFICIAL_AGU_AGU_PRODUCTS;
 export const BABY_UZI_EXTRAS = OFFICIAL_AGU_AGU_EXTRAS;
 
+/**
+ * Desactivado permanentemente: La función 'Sincronizar catálogo Agu Agu'
+ * fue eliminada para proteger el inventario real de la tienda.
+ */
 export async function resetCatalogWithAguAguData(): Promise<void> {
-  // 1. Obtener y borrar productos existentes
-  const currentProds = await getProducts();
-  const currentExtras = await getExtraProducts();
-  
-  const batch = writeBatch(db);
-  for (const p of currentProds) {
-    batch.delete(doc(db, PRODUCTS_COLLECTION, p.id));
-  }
-  for (const e of currentExtras) {
-    batch.delete(doc(db, EXTRA_PRODUCTS_COLLECTION, e.id));
-  }
-  await batch.commit();
-
-  // 2. Insertar catálogo oficial Agu Agu
-  const insertBatch = writeBatch(db);
-  const createdProducts: Product[] = [];
-  for (const p of OFFICIAL_AGU_AGU_PRODUCTS) {
-    const docRef = doc(collection(db, PRODUCTS_COLLECTION));
-    insertBatch.set(docRef, p);
-    createdProducts.push({ id: docRef.id, ...p });
-  }
-  for (const e of OFFICIAL_AGU_AGU_EXTRAS) {
-    const docRef = doc(collection(db, EXTRA_PRODUCTS_COLLECTION));
-    insertBatch.set(docRef, e);
-  }
-  await insertBatch.commit();
-  await updateStoreConfig(DEFAULT_STORE_CONFIG);
-
-  // 3. Sincronizar o actualizar la mesa demo si existe
-  try {
-    const tables = await getGiftTables();
-    const demoTable = tables.find(t => t.slug === 'baby-mateo-2026') || tables[0];
-    if (demoTable) {
-      // Limpiar items anteriores y recargar con nuevos productos con multi-fotos
-      const oldItems = await getTableItems(demoTable.id);
-      const itemsBatch = writeBatch(db);
-      for (const item of oldItems) {
-        itemsBatch.delete(doc(db, GIFT_TABLES_COLLECTION, demoTable.id, TABLE_ITEMS_SUBCOLLECTION, item.id));
-      }
-      const sampleToAdd = createdProducts.slice(0, 6);
-      sampleToAdd.forEach((prod, index) => {
-        const itemRef = doc(collection(db, GIFT_TABLES_COLLECTION, demoTable.id, TABLE_ITEMS_SUBCOLLECTION));
-        let status: ItemStatus = 'disponible';
-        let donorName = '';
-        if (index === 2) {
-          status = 'reservado_en_tienda';
-          donorName = 'Tía Carmen y Familia';
-        } else if (index === 3) {
-          status = 'seleccionado';
-          donorName = 'Padrinos David y Sofía';
-        }
-        itemsBatch.set(itemRef, {
-          tableId: demoTable.id,
-          productId: prod.id,
-          name: prod.name,
-          description: prod.description,
-          price: prod.price,
-          imageUrl: prod.imageUrl,
-          images: prod.images || (prod.imageUrl ? [prod.imageUrl] : []),
-          status,
-          donorName: donorName || undefined,
-          updatedAt: new Date().toISOString(),
-        });
-      });
-      await itemsBatch.commit();
-    }
-  } catch (err) {
-    console.error('Error sincronizando mesa demo:', err);
-  }
+  console.warn('resetCatalogWithAguAguData ha sido desactivada permanentemente.');
+  return Promise.resolve();
 }
 
 // Backward compatibility alias
 export const resetCatalogWithBabyUziData = resetCatalogWithAguAguData;
 
+/**
+ * Desactivado permanentemente: El inventario se gestiona exclusivamente
+ * de forma manual por la administradora.
+ */
 export async function seedInitialSampleDataIfEmpty(): Promise<boolean> {
-  try {
-    const coll = collection(db, PRODUCTS_COLLECTION);
-    const snap = await getDocs(coll);
-    
-    if (!snap.empty) {
-      return false; // Ya tiene productos en Firestore
-    }
-
-    // Insertar productos oficiales de Agu Agu
-    const productBatch = writeBatch(db);
-    const createdProductDocs: Product[] = [];
-
-    for (const p of OFFICIAL_AGU_AGU_PRODUCTS) {
-      const docRef = doc(collection(db, PRODUCTS_COLLECTION));
-      productBatch.set(docRef, p);
-      createdProductDocs.push({ id: docRef.id, ...p });
-    }
-
-    for (const e of OFFICIAL_AGU_AGU_EXTRAS) {
-      const docRef = doc(collection(db, EXTRA_PRODUCTS_COLLECTION));
-      productBatch.set(docRef, e);
-    }
-
-    await productBatch.commit();
-
-    // Crear una mesa de regalo de demostración para poder probar de inmediato
-    const demoTableDoc = doc(collection(db, GIFT_TABLES_COLLECTION));
-    const demoSlug = 'baby-mateo-2026';
-    
-    await setDoc(demoTableDoc, {
-      familyName: 'Familia García Rodríguez',
-      babyName: 'Mateo',
-      eventDate: '2026-10-15',
-      greeting: '¡Estamos muy emocionados por la llegada de nuestro pequeño Mateo! Gracias por ser parte de este momento tan especial para nosotros.',
-      slug: demoSlug,
-      createdAt: new Date().toISOString(),
-    });
-
-    // Agregar items a la mesa demo
-    const tableItemsBatch = writeBatch(db);
-    const demoItems = createdProductDocs.slice(0, 6);
-    
-    demoItems.forEach((prod, index) => {
-      const itemRef = doc(collection(db, GIFT_TABLES_COLLECTION, demoTableDoc.id, TABLE_ITEMS_SUBCOLLECTION));
-      let status: ItemStatus = 'disponible';
-      let donorName = '';
-      
-      if (index === 2) {
-        status = 'reservado_en_tienda';
-        donorName = 'Tía Carmen y Familia';
-      } else if (index === 3) {
-        status = 'seleccionado';
-        donorName = 'Padrinos David y Sofía';
-      }
-
-      tableItemsBatch.set(itemRef, {
-        tableId: demoTableDoc.id,
-        productId: prod.id,
-        name: prod.name,
-        description: prod.description,
-        price: prod.price,
-        imageUrl: prod.imageUrl,
-        images: prod.images || (prod.imageUrl ? [prod.imageUrl] : []),
-        status,
-        donorName: donorName || undefined,
-        updatedAt: new Date().toISOString(),
-      });
-    });
-
-    await tableItemsBatch.commit();
-    await updateStoreConfig(DEFAULT_STORE_CONFIG);
-
-    return true;
-  } catch (error) {
-    console.error('Error al inicializar datos de muestra:', error);
-    return false;
-  }
+  return false;
 }

@@ -101,6 +101,10 @@
     "/config/{docId}": {
       "schema": "StoreConfig",
       "description": "Store configuration"
+    },
+    "/deleted_gift_tables/{tableId}": {
+      "schema": "DeletedGiftTable",
+      "description": "Papelera de mesas de regalo eliminadas con retención de 15 días antes del borrado permanente"
     }
   }
 }

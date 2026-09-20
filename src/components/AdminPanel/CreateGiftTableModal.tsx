@@ -14,9 +14,10 @@ import {
   AlertCircle,
   ShoppingBag,
   Info,
+  Clock,
 } from 'lucide-react';
 import { Product } from '../../types';
-import { createGiftTable, getProducts, seedInitialSampleDataIfEmpty } from '../../services/dbService';
+import { createGiftTable, getProducts } from '../../services/dbService';
 import { getCanonicalMesaUrl } from '../../utils/slug';
 
 interface CreateGiftTableModalProps {
@@ -36,9 +37,11 @@ export const CreateGiftTableModal: React.FC<CreateGiftTableModalProps> = ({
 }) => {
   const [familyName, setFamilyName] = useState('');
   const [babyName, setBabyName] = useState('');
+  const [gender, setGender] = useState('No especificado');
   const [eventDate, setEventDate] = useState(
     new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
   );
+  const [eventTime, setEventTime] = useState('15:00');
   const [greeting, setGreeting] = useState(
     '¡Estamos muy felices de compartir la llegada de nuestro bebé con ustedes! Gracias por sus muestras de cariño.'
   );
@@ -60,12 +63,6 @@ export const CreateGiftTableModal: React.FC<CreateGiftTableModalProps> = ({
       } else {
         setIsLoadingInventory(true);
         getProducts()
-          .then((prods) => {
-            if (prods.length === 0) {
-              return seedInitialSampleDataIfEmpty().then(() => getProducts());
-            }
-            return prods;
-          })
           .then((loaded) => {
             setAvailableProducts(loaded);
           })
@@ -138,7 +135,9 @@ export const CreateGiftTableModal: React.FC<CreateGiftTableModalProps> = ({
         {
           familyName: cleanFamilyName,
           babyName: babyName.trim() || undefined,
+          gender,
           eventDate,
+          eventTime: eventTime.trim() || undefined,
           greeting: greeting.trim(),
         },
         selectedProducts
@@ -169,6 +168,8 @@ export const CreateGiftTableModal: React.FC<CreateGiftTableModalProps> = ({
     // Reset state
     setFamilyName('');
     setBabyName('');
+    setGender('No especificado');
+    setEventTime('15:00');
     setSelectedProductIds([]);
     setCreatedSlug(null);
     setFormError(null);
@@ -325,7 +326,24 @@ export const CreateGiftTableModal: React.FC<CreateGiftTableModalProps> = ({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-[#6C7086] mb-1">
+                      Género del Bebé
+                    </label>
+                    <select
+                      id="baby-gender-select"
+                      value={gender}
+                      onChange={(e) => setGender(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-[#E2D9CF] bg-white text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA] cursor-pointer"
+                    >
+                      <option value="No especificado">No especificado</option>
+                      <option value="Niño">Niño</option>
+                      <option value="Niña">Niña</option>
+                      <option value="Por revelar / Sorpresa">Por revelar / Sorpresa</option>
+                    </select>
+                  </div>
+
                   <div>
                     <label className="block text-xs font-bold text-[#6C7086] mb-1">
                       Fecha del Evento *
@@ -345,17 +363,33 @@ export const CreateGiftTableModal: React.FC<CreateGiftTableModalProps> = ({
 
                   <div>
                     <label className="block text-xs font-bold text-[#6C7086] mb-1">
-                      Mensaje de Bienvenida para Invitados
+                      Hora del Evento
                     </label>
-                    <input
-                      id="table-greeting-input"
-                      type="text"
-                      placeholder="Mensaje amoroso para tus seres queridos..."
-                      value={greeting}
-                      onChange={(e) => setGreeting(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-[#E2D9CF] bg-white text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
-                    />
+                    <div className="relative">
+                      <Clock className="w-4 h-4 text-[#A0A4B8] absolute left-3 top-3" />
+                      <input
+                        id="event-time-input"
+                        type="time"
+                        value={eventTime}
+                        onChange={(e) => setEventTime(e.target.value)}
+                        className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-[#E2D9CF] bg-white text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
+                      />
+                    </div>
                   </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-[#6C7086] mb-1">
+                    Mensaje de Bienvenida para Invitados
+                  </label>
+                  <input
+                    id="table-greeting-input"
+                    type="text"
+                    placeholder="Mensaje amoroso para tus seres queridos..."
+                    value={greeting}
+                    onChange={(e) => setGreeting(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-[#E2D9CF] bg-white text-sm text-[#4A4E69] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
+                  />
                 </div>
               </div>
 

@@ -738,3 +738,46 @@ export async function deleteProductImagesFolder(
   }
 }
 
+/**
+ * Sube y optimiza el logotipo de la tienda para el administrador.
+ * Intenta subirlo a Firebase Storage bajo 'logos/logo_<timestamp>' con fallback automático
+ * a data URL optimizado (WebP/JPEG de máx 600x600 px) para que funcione en cualquier entorno.
+ */
+export async function uploadStoreLogo(file: File): Promise<string> {
+  if (!file) throw new Error('No se proporcionó ningún archivo de imagen para el logo.');
+
+  // Primero intentamos almacenar en Firebase Storage si está disponible
+  try {
+    const optimizedResult = await compressAndResizeImage(file, 600, 0.85);
+    const fileExt = optimizedResult.extension || file.name.split('.').pop() || 'jpg';
+    const storageRef = ref(storage, `logos/store_logo_${Date.now()}.${fileExt}`);
+    const uploadTask = uploadBytesResumable(storageRef, optimizedResult.blob);
+
+    await withTimeout(
+      new Promise<string>((resolve, reject) => {
+        uploadTask.on(
+          'state_changed',
+          null,
+          (err) => reject(err),
+          async () => {
+            try {
+              const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
+              resolve(downloadUrl);
+            } catch (urlErr) {
+              reject(urlErr);
+            }
+          }
+        );
+      }),
+      8000,
+      'TIMEOUT_LOGO_STORAGE_UPLOAD'
+    );
+
+    const finalUrl = await getDownloadURL(storageRef);
+    return finalUrl;
+  } catch (storageErr) {
+    console.warn('[UPLOAD STORE LOGO] Firebase Storage no disponible o timeout, usando dataUrl optimizado persistente:', storageErr);
+    return await fileToOptimizedDataUrl(file, 600, 0.85);
+  }
+}
+

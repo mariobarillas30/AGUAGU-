@@ -1,7 +1,7 @@
 import React from 'react';
 import { Sparkles, ShoppingBag, MessageCircle, Heart } from 'lucide-react';
 import { ExtraProduct, StoreConfig } from '../../types';
-import { sanitizeWhatsAppNumber } from '../../services/paymentService';
+import { buildUniversalWhatsAppUrl, openWhatsAppSafely } from '../../services/paymentService';
 
 interface ExtraProductsSectionProps {
   extras: ExtraProduct[];
@@ -17,20 +17,22 @@ export const ExtraProductsSection: React.FC<ExtraProductsSectionProps> = ({
   if (extras.length === 0) return null;
 
   const handleOrderExtra = (extra: ExtraProduct) => {
-    const cleanPhone = sanitizeWhatsAppNumber(storeConfig.whatsappNumber);
-    const msg = [
-      `👶 *¡Hola ${storeConfig.storeName}!* Quisiera agregar un *Detalle Especial* para la mesa de regalos:`,
-      `• *Mesa:* ${tableName}`,
-      `• *Detalle Especial:* ${extra.name}`,
-      `• *Valor:* ${storeConfig.currencySymbol}${extra.price.toFixed(2)}`,
+    const lines = [
+      `Estimado equipo de Agu Agu,`,
       ``,
-      `Por favor indíquenme cómo puedo coordinar este detalle adicional con amor. ¡Gracias!`,
-    ].join('\n');
+      `Deseo consultar sobre el siguiente detalle adicional para la mesa de regalos:`,
+      ``,
+      `Mesa / Evento: ${tableName}`,
+      `Detalle adicional: ${extra.name} | Cantidad: 1 | Precio: ${storeConfig.currencySymbol}${extra.price.toFixed(2)}`,
+      ``,
+      `Agradezco me indiquen la disponibilidad y el proceso para coordinar la entrega o pago.`,
+      ``,
+      `Muchas gracias.`,
+    ];
 
-    const url = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`;
-    if (typeof window !== 'undefined') {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    }
+    const msg = lines.join('\n');
+    const url = buildUniversalWhatsAppUrl(storeConfig.whatsappNumber, msg);
+    openWhatsAppSafely(url);
   };
 
   return (

@@ -35,7 +35,7 @@ service cloud.firestore {
       // Lectura pública para desplegar catálogo y verificar disponibilidad
       allow read: if true;
       
-      // Creación y eliminación exclusivas de administradores autenticados
+      // Creación y eliminación exclusivas de administradores
       allow create, delete: if isAdmin() || request.auth != null;
       
       // Actualización:
@@ -102,6 +102,13 @@ service cloud.firestore {
         );
       }
     }
+
+    // 5. Papelera de mesas de regalo (Mesas eliminadas con retención de 15 días)
+    match /deleted_gift_tables/{tableId} {
+      // Exclusivo para administradores autenticados; usuarios públicos no tienen acceso
+      allow read, write: if isAdmin() || request.auth != null;
+    }
   }
 }
+
 

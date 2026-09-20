@@ -11,18 +11,24 @@ import {
   Eye,
   Layers,
   AlertCircle,
+  Check,
+  Plus,
 } from 'lucide-react';
 import { TableItem, ItemStatus } from '../../types';
 
 interface GiftItemCardProps {
   item: TableItem;
   currencySymbol?: string;
+  isSelected?: boolean;
+  onToggleSelect?: (item: TableItem) => void;
   onSelectGift: (item: TableItem) => void;
 }
 
 export const GiftItemCard: React.FC<GiftItemCardProps> = ({
   item,
   currencySymbol = '$',
+  isSelected = false,
+  onToggleSelect,
   onSelectGift,
 }) => {
   const isOutOfStock = Boolean(item.isOutOfStock);
@@ -121,10 +127,30 @@ export const GiftItemCard: React.FC<GiftItemCardProps> = ({
 
           {/* Multi-image photo count badge */}
           {allImages.length > 1 && (
-            <div className="absolute top-2.5 right-2.5 z-10 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-xs text-[10px] text-white font-bold flex items-center gap-1">
+            <div className={`absolute ${isAvailable && onToggleSelect ? 'top-11' : 'top-2.5'} right-2.5 z-10 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-xs text-[10px] text-white font-bold flex items-center gap-1`}>
               <Layers className="w-2.5 h-2.5 text-[#A8D8EA]" />
               {currentImageIndex + 1}/{allImages.length} vistas
             </div>
+          )}
+
+          {/* Quick Select Button for Multi-Gift Bundle */}
+          {isAvailable && onToggleSelect && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleSelect(item);
+              }}
+              className={`absolute top-2.5 right-2.5 z-20 px-2.5 py-1 rounded-xl text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer shadow-xs ${
+                isSelected
+                  ? 'bg-[#E58C8A] text-white ring-2 ring-white shadow-md'
+                  : 'bg-white/95 text-[#4A4E69] hover:text-[#E58C8A] hover:bg-white border border-[#E2D9CF]'
+              }`}
+              title={isSelected ? 'Quitar de selección múltiple' : 'Seleccionar para regalar varios'}
+            >
+              {isSelected ? <Check className="w-3.5 h-3.5 stroke-[3]" /> : <Plus className="w-3.5 h-3.5 text-[#E58C8A]" />}
+              <span>{isSelected ? 'Elegido' : 'Elegir'}</span>
+            </button>
           )}
 
           {/* Carousel Arrows */}
@@ -203,14 +229,30 @@ export const GiftItemCard: React.FC<GiftItemCardProps> = ({
         </div>
 
         {isAvailable ? (
-          <button
-            id={`btn-gift-item-${item.id}`}
-            onClick={() => onSelectGift(item)}
-            className="w-full py-2.5 px-4 rounded-2xl bg-gradient-to-r from-[#E58C8A] to-[#F48B7A] text-white font-bold text-xs shadow-xs hover:brightness-105 transition-all flex items-center justify-center gap-2 cursor-pointer"
-          >
-            <Heart className="w-4 h-4 fill-white" />
-            Regalar este Detalle
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              id={`btn-gift-item-${item.id}`}
+              onClick={() => onSelectGift(item)}
+              className="flex-1 py-2.5 px-3 rounded-2xl bg-gradient-to-r from-[#E58C8A] to-[#F48B7A] text-white font-bold text-xs shadow-xs hover:brightness-105 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <Heart className="w-3.5 h-3.5 fill-white" />
+              <span>{isSelected ? 'Completar Regalo' : 'Regalar este Detalle'}</span>
+            </button>
+            {onToggleSelect && (
+              <button
+                type="button"
+                onClick={() => onToggleSelect(item)}
+                className={`p-2.5 rounded-2xl border text-xs font-bold transition-all cursor-pointer ${
+                  isSelected
+                    ? 'bg-[#F7C8D0]/30 text-[#D64E66] border-[#F7C8D0]'
+                    : 'bg-[#FAF7F2] text-[#6C7086] hover:text-[#E58C8A] hover:bg-white border-[#E2D9CF]'
+                }`}
+                title={isSelected ? 'Quitar de tu lista' : 'Agregar a lista de varios regalos'}
+              >
+                {isSelected ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+              </button>
+            )}
+          </div>
         ) : isOutOfStock && item.status === 'disponible' ? (
           <button
             id={`btn-gift-item-${item.id}`}

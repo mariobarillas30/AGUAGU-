@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   CreditCard,
@@ -13,16 +13,24 @@ import {
   ExternalLink,
   ShieldCheck,
   AlertCircle,
+  Plus,
+  Trash2,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { TableItem, GiftTable, StoreConfig } from '../../types';
-import { reserveTableItemWithTransaction } from '../../services/dbService';
-import { processCardPaymentIntent, processStoreReservationIntent } from '../../services/paymentService';
+import { reserveMultipleTableItemsWithTransaction } from '../../services/dbService';
+import {
+  processCardPaymentIntent,
+  processStoreReservationIntent,
+  SelectedGiftItemInfo,
+} from '../../services/paymentService';
 
-interface GiftActionModalProps {
+export interface GiftActionModalProps {
   isOpen: boolean;
   onClose: () => void;
-  item: TableItem | null;
+  item?: TableItem | null;
+  items?: TableItem[];
+  availableItems?: TableItem[];
   table: GiftTable;
   storeConfig: StoreConfig;
   onSuccess: () => void;
@@ -32,10 +40,13 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
   isOpen,
   onClose,
   item,
+  items,
+  availableItems = [],
   table,
   storeConfig,
   onSuccess,
 }) => {
+  const [selectedItemsList, setSelectedItemsList] = useState<TableItem[]>([]);
   const [selectedMethod, setSelectedMethod] = useState<'tienda' | 'tarjeta' | null>(null);
   const [donorName, setDonorName] = useState('');
   const [donorPhone, setDonorPhone] = useState('');
@@ -45,10 +56,51 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
   const [whatsappUrlGenerated, setWhatsappUrlGenerated] = useState<string | null>(null);
   const [modalImageIdx, setModalImageIdx] = useState(0);
   const [formError, setFormError] = useState<string | null>(null);
+  const [showAddMoreList, setShowAddMoreList] = useState(false);
 
-  if (!isOpen || !item) return null;
+  // Synchronize items when modal opens or props change
+  useEffect(() => {
+    if (!isOpen) return;
+    if (items && items.length > 0) {
+      setSelectedItemsList(items);
+    } else if (item) {
+      setSelectedItemsList([item]);
+    } else {
+      setSelectedItemsList([]);
+    }
+    setModalImageIdx(0);
+    setFormError(null);
+  }, [isOpen, item, items]);
 
-  const itemImages = item.images && item.images.length > 0 ? item.images : [item.imageUrl];
+  if (!isOpen || selectedItemsList.length === 0) return null;
+
+  const totalAmount = selectedItemsList.reduce((acc, it) => acc + it.price, 0);
+
+  // Other available gifts from this table that are not yet in the bundle
+  const remainingAvailableGifts = availableItems.filter(
+    (ai) =>
+      ai.status === 'disponible' &&
+      !ai.isOutOfStock &&
+      !selectedItemsList.some((si) => si.id === ai.id)
+  );
+
+  const handleAddItemToBundle = (giftToAdd: TableItem) => {
+    setSelectedItemsList((prev) => [...prev, giftToAdd]);
+    setShowAddMoreList(false);
+  };
+
+  const handleRemoveItemFromBundle = (idToRemove: string) => {
+    if (selectedItemsList.length <= 1) return;
+    setSelectedItemsList((prev) => prev.filter((it) => it.id !== idToRemove));
+  };
+
+  const primaryItem = selectedItemsList[0];
+  const primaryItemImages =
+    primaryItem && primaryItem.images && primaryItem.images.length > 0
+      ? primaryItem.images
+      : primaryItem
+      ? [primaryItem.imageUrl]
+      : [];
 
   const triggerConfetti = () => {
     try {
@@ -58,8 +110,8 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
         origin: { y: 0.6 },
         colors: ['#A8D8EA', '#F7C8D0', '#E6B875', '#FAF7F2', '#F48B7A'],
       });
-    } catch (e) {
-      console.warn('Confetti error:', e);
+    } catch {
+      // Ignorar si el navegador bloquea canvas
     }
   };
 
@@ -83,28 +135,44 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
 
     setIsSubmitting(true);
     try {
-      // 1. Reservar atómicamente en Firestore
-      const result = await reserveTableItemWithTransaction(table.id, item.id, 'reservado_en_tienda', {
-        donorName: cleanName,
-        donorPhone: cleanPhone,
-        paymentMethod: 'tienda',
-        notes: donorMessage.trim() || undefined,
-      });
+      // Reservar atómicamente todos los regalos seleccionados en Firestore
+      const result = await reserveMultipleTableItemsWithTransaction(
+        table.id,
+        selectedItemsList,
+        'reservado_en_tienda',
+        {
+          donorName: cleanName,
+          donorPhone: cleanPhone,
+          paymentMethod: 'tienda',
+          notes: donorMessage.trim() || undefined,
+        }
+      );
 
-      if (!result.success) {
+      if (!result.success && result.reservedItems.length === 0) {
         setFormError(result.message || 'No fue posible completar la reserva.');
         setIsSubmitting(false);
         return;
       }
 
-      // 2. Notificar a la tienda vía WhatsApp para seguimiento idéntico a tarjeta
+      // Consolidar lista de regalos para el mensaje formal
+      const activeItems = result.reservedItems.length > 0 ? result.reservedItems : selectedItemsList;
+      const itemsPayload: SelectedGiftItemInfo[] = activeItems.map((it) => ({
+        name: it.name,
+        price: it.price,
+        quantity: 1,
+      }));
+
+      const finalTotal = itemsPayload.reduce((acc, i) => acc + i.price, 0);
+
+      // Notificar a la tienda vía WhatsApp formalmente sin emojis
       const storeIntentResult = await processStoreReservationIntent({
         donorName: cleanName,
         donorPhone: cleanPhone,
         tableName: table.familyName,
         tableSlug: table.slug,
-        productName: item.name,
-        productPrice: item.price,
+        tableId: table.id,
+        items: itemsPayload,
+        totalPrice: finalTotal,
         currencySymbol: storeConfig.currencySymbol,
         whatsappNumber: storeConfig.whatsappNumber,
         storeName: storeConfig.storeName,
@@ -146,28 +214,43 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
 
     setIsSubmitting(true);
     try {
-      // 1. Validar y reservar atómicamente en Firestore (prevención de race condition)
-      const reserveResult = await reserveTableItemWithTransaction(table.id, item.id, 'seleccionado', {
-        donorName: cleanName,
-        donorPhone: cleanPhone,
-        paymentMethod: 'tarjeta',
-        notes: donorMessage.trim() || undefined,
-      });
+      // Validar y reservar atómicamente todos los regalos en Firestore
+      const reserveResult = await reserveMultipleTableItemsWithTransaction(
+        table.id,
+        selectedItemsList,
+        'seleccionado',
+        {
+          donorName: cleanName,
+          donorPhone: cleanPhone,
+          paymentMethod: 'tarjeta',
+          notes: donorMessage.trim() || undefined,
+        }
+      );
 
-      if (!reserveResult.success) {
-        setFormError(reserveResult.message || 'No fue posible apartar este regalo.');
+      if (!reserveResult.success && reserveResult.reservedItems.length === 0) {
+        setFormError(reserveResult.message || 'No fue posible apartar los regalos seleccionados.');
         setIsSubmitting(false);
         return;
       }
 
-      // 2. Process payment intent via the isolated paymentService module
+      const activeItems = reserveResult.reservedItems.length > 0 ? reserveResult.reservedItems : selectedItemsList;
+      const itemsPayload: SelectedGiftItemInfo[] = activeItems.map((it) => ({
+        name: it.name,
+        price: it.price,
+        quantity: 1,
+      }));
+
+      const finalTotal = itemsPayload.reduce((acc, i) => acc + i.price, 0);
+
+      // Process card payment intent with formal WhatsApp message
       const paymentIntentResult = await processCardPaymentIntent({
         donorName: cleanName,
         donorPhone: cleanPhone,
         tableName: table.familyName,
         tableSlug: table.slug,
-        productName: item.name,
-        productPrice: item.price,
+        tableId: table.id,
+        items: itemsPayload,
+        totalPrice: finalTotal,
         currencySymbol: storeConfig.currencySymbol,
         whatsappNumber: storeConfig.whatsappNumber,
         storeName: storeConfig.storeName,
@@ -197,6 +280,7 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
     setIsSuccess(false);
     setWhatsappUrlGenerated(null);
     setFormError(null);
+    setShowAddMoreList(false);
     onClose();
   };
 
@@ -209,19 +293,42 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
         {/* ================================================================= */}
         {isSuccess ? (
           <div className="p-6 sm:p-8 text-center">
-            <div className="w-18 h-18 mx-auto mb-4 bg-gradient-to-tr from-[#A8D8EA] to-[#F7C8D0] rounded-3xl p-1 shadow-md flex items-center justify-center">
+            <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-tr from-[#A8D8EA] to-[#F7C8D0] rounded-3xl p-1 shadow-md flex items-center justify-center">
               <div className="w-full h-full bg-white rounded-[20px] flex items-center justify-center">
-                <Heart className="w-9 h-9 text-[#E58C8A] fill-[#F7C8D0]" />
+                <Heart className="w-8 h-8 text-[#E58C8A] fill-[#F7C8D0]" />
               </div>
             </div>
 
             <h3 className="text-2xl font-heading font-bold text-[#4A4E69] mb-1">
-              ¡Muchas Gracias por tu Cariño! 🍼
+              ¡Muchas Gracias por tu Cariño!
             </h3>
             
-            <p className="text-xs text-[#8C90A4] max-w-sm mx-auto mb-5">
-              Has apartado este regalo para la <strong className="text-[#4A4E69]">{table.familyName}</strong>.
+            <p className="text-xs text-[#8C90A4] max-w-sm mx-auto mb-4">
+              Has apartado {selectedItemsList.length} {selectedItemsList.length === 1 ? 'regalo' : 'regalos'} para la <strong className="text-[#4A4E69]">{table.familyName}</strong>.
             </p>
+
+            {/* List of reserved gifts */}
+            <div className="bg-[#FAF7F2] p-3.5 rounded-2xl border border-[#E8DFC8]/60 text-left mb-4">
+              <span className="block text-[10px] font-bold text-[#8C90A4] uppercase tracking-wider mb-2">
+                Resumen de Regalo(s):
+              </span>
+              <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                {selectedItemsList.map((g) => (
+                  <div key={g.id} className="flex items-center justify-between text-xs text-[#4A4E69]">
+                    <span className="truncate mr-2 font-medium">• {g.name}</span>
+                    <span className="font-bold text-[#E58C8A] shrink-0">
+                      {storeConfig.currencySymbol}{g.price.toFixed(2)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="pt-2 mt-2 border-t border-[#E8DFC8]/70 flex items-center justify-between text-xs font-bold text-[#4A4E69]">
+                <span>Total:</span>
+                <span className="text-[#E58C8A] font-extrabold text-sm">
+                  {storeConfig.currencySymbol}{totalAmount.toFixed(2)}
+                </span>
+              </div>
+            </div>
 
             {/* Success details based on chosen method */}
             {selectedMethod === 'tienda' ? (
@@ -231,11 +338,11 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
                   <span>Reserva en Tienda Registrada</span>
                 </div>
                 <p className="text-xs text-[#6C7086]">
-                  El producto ha quedado reservado a nombre de{' '}
-                  <strong className="text-[#4A4E69]">{donorName}</strong> (Tel: {donorPhone}). Se ha generado el mensaje de WhatsApp para que la tienda le dé seguimiento a tu visita.
+                  El pedido ha quedado reservado a nombre de{' '}
+                  <strong className="text-[#4A4E69]">{donorName}</strong> (Tel: {donorPhone}). Se ha generado el mensaje formal de WhatsApp para coordinar tu visita a la tienda.
                 </p>
                 <div className="text-xs font-semibold text-[#4A4E69] bg-white p-2.5 rounded-xl border border-[#E2D9CF]">
-                  📍 {storeConfig.storeName} - {storeConfig.storeAddress || 'Tienda Principal'}
+                  {storeConfig.storeName} - {storeConfig.storeAddress || 'Tienda Principal'}
                 </div>
 
                 {whatsappUrlGenerated && (
@@ -256,10 +363,10 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
               <div className="bg-[#FAF7F2] p-4 rounded-2xl border border-[#E8DFC8]/60 text-left space-y-2 mb-6">
                 <div className="flex items-center gap-2 text-xs font-bold text-[#2563EB]">
                   <CreditCard className="w-4 h-4" />
-                  <span>Regalo Seleccionado para Pago con Tarjeta</span>
+                  <span>Regalo(s) Seleccionado(s) para Pago con Tarjeta</span>
                 </div>
                 <p className="text-xs text-[#6C7086]">
-                  Se abrió WhatsApp con el número de la tienda para facilitarte el enlace seguro de cobro. Si no se abrió automáticamente, presiona el botón:
+                  Se abrió WhatsApp con el número de la tienda para facilitarte el enlace seguro de pago. Si no se abrió automáticamente, presiona el botón:
                 </p>
                 {whatsappUrlGenerated && (
                   <a
@@ -295,7 +402,7 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
                 </div>
                 <div>
                   <h3 className="font-heading font-bold text-lg text-[#4A4E69]">
-                    Obsequiar este Regalo
+                    {selectedItemsList.length > 1 ? 'Obsequiar Regalos' : 'Obsequiar este Regalo'}
                   </h3>
                   <p className="text-xs text-[#8C90A4]">
                     Para la {table.familyName}
@@ -313,48 +420,161 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
             </div>
 
             <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
-              {/* Product preview banner */}
-              <div className="p-3 bg-[#FAF7F2] rounded-2xl border border-[#F2EAE0]">
-                <div className="flex items-center gap-3.5">
-                  <img
-                    src={itemImages[modalImageIdx] || item.imageUrl}
-                    alt={item.name}
-                    className="w-16 h-16 rounded-xl object-cover border border-[#E2D9CF] shrink-0"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <h4 className="font-bold text-xs text-[#4A4E69] truncate">
-                      {item.name}
-                    </h4>
-                    <span className="text-sm font-extrabold text-[#E58C8A]">
-                      {storeConfig.currencySymbol}
-                      {item.price.toFixed(2)}
-                    </span>
-                    <p className="text-[11px] text-[#8C90A4] line-clamp-1">
-                      {item.description}
-                    </p>
+              {/* Product preview / Multi-product bundle banner */}
+              {selectedItemsList.length === 1 ? (
+                <div className="p-3 bg-[#FAF7F2] rounded-2xl border border-[#F2EAE0]">
+                  <div className="flex items-center gap-3.5">
+                    <img
+                      src={primaryItemImages[modalImageIdx] || primaryItem.imageUrl}
+                      alt={primaryItem.name}
+                      className="w-16 h-16 rounded-xl object-cover border border-[#E2D9CF] shrink-0"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <h4 className="font-bold text-xs text-[#4A4E69] truncate">
+                        {primaryItem.name}
+                      </h4>
+                      <span className="text-sm font-extrabold text-[#E58C8A]">
+                        {storeConfig.currencySymbol}
+                        {primaryItem.price.toFixed(2)}
+                      </span>
+                      <p className="text-[11px] text-[#8C90A4] line-clamp-1">
+                        {primaryItem.description}
+                      </p>
+                    </div>
                   </div>
-                </div>
 
-                {itemImages.length > 1 && (
-                  <div className="mt-2 pt-2 border-t border-[#E8DFC8]/60 flex items-center gap-1.5 overflow-x-auto">
-                    <span className="text-[10px] font-bold text-[#8C90A4] uppercase mr-1">Vistas/Colores:</span>
-                    {itemImages.map((img, idx) => (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => setModalImageIdx(idx)}
-                        className={`w-7 h-7 rounded-lg overflow-hidden border-2 transition-all cursor-pointer ${
-                          modalImageIdx === idx
-                            ? 'border-[#E58C8A] ring-1 ring-[#F7C8D0]'
-                            : 'border-transparent opacity-60 hover:opacity-100'
-                        }`}
+                  {primaryItemImages.length > 1 && (
+                    <div className="mt-2 pt-2 border-t border-[#E8DFC8]/60 flex items-center gap-1.5 overflow-x-auto">
+                      <span className="text-[10px] font-bold text-[#8C90A4] uppercase mr-1">Vistas:</span>
+                      {primaryItemImages.map((img, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => setModalImageIdx(idx)}
+                          className={`w-7 h-7 rounded-lg overflow-hidden border-2 transition-all cursor-pointer ${
+                            modalImageIdx === idx
+                              ? 'border-[#E58C8A] ring-1 ring-[#F7C8D0]'
+                              : 'border-transparent opacity-60 hover:opacity-100'
+                          }`}
+                        >
+                          <img src={img} alt={`Vista ${idx + 1}`} className="w-full h-full object-cover" />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* Multi-item Bundle Card */
+                <div className="p-3.5 bg-[#FAF7F2] rounded-2xl border border-[#F2EAE0]">
+                  <div className="flex items-center justify-between mb-2 pb-2 border-b border-[#E8DFC8]/60">
+                    <span className="text-xs font-bold text-[#4A4E69]">
+                      Regalos seleccionados ({selectedItemsList.length})
+                    </span>
+                    <span className="text-sm font-extrabold text-[#E58C8A]">
+                      Total: {storeConfig.currencySymbol}{totalAmount.toFixed(2)}
+                    </span>
+                  </div>
+
+                  <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                    {selectedItemsList.map((gift) => (
+                      <div
+                        key={gift.id}
+                        className="flex items-center justify-between p-2 rounded-xl bg-white border border-[#E8DFC8]/70"
                       >
-                        <img src={img} alt={`Vista ${idx + 1}`} className="w-full h-full object-cover" />
-                      </button>
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          <img
+                            src={gift.imageUrl}
+                            alt={gift.name}
+                            className="w-9 h-9 rounded-lg object-cover border border-gray-200 shrink-0"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <h5 className="font-bold text-xs text-[#4A4E69] truncate">
+                              {gift.name}
+                            </h5>
+                            <span className="text-xs font-extrabold text-[#E58C8A]">
+                              {storeConfig.currencySymbol}{gift.price.toFixed(2)}
+                            </span>
+                          </div>
+                        </div>
+
+                        {selectedItemsList.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveItemFromBundle(gift.id)}
+                            className="p-1 text-gray-400 hover:text-red-500 transition-colors ml-2 cursor-pointer"
+                            title="Quitar este regalo"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     ))}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
+
+              {/* Add more gifts toggle button */}
+              {remainingAvailableGifts.length > 0 && (
+                <div>
+                  {!showAddMoreList ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowAddMoreList(true)}
+                      className="w-full py-2 px-3 rounded-xl bg-[#FAF7F2] hover:bg-[#F2EAE0] text-[#4A4E69] border border-[#E2D9CF] text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5 text-[#E58C8A]" />
+                      <span>Agregar otro regalo de esta mesa ({remainingAvailableGifts.length} disponibles)</span>
+                    </button>
+                  ) : (
+                    <div className="p-3 bg-white rounded-2xl border border-[#A8D8EA] shadow-2xs space-y-2">
+                      <div className="flex items-center justify-between pb-1 border-b border-gray-100">
+                        <span className="text-xs font-bold text-[#4A4E69]">
+                          Selecciona otro regalo para agregar:
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setShowAddMoreList(false)}
+                          className="text-[11px] font-bold text-[#8C90A4] hover:text-[#4A4E69] cursor-pointer"
+                        >
+                          Cerrar
+                        </button>
+                      </div>
+
+                      <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                        {remainingAvailableGifts.map((avail) => (
+                          <div
+                            key={avail.id}
+                            className="flex items-center justify-between p-2 rounded-xl bg-[#FAF7F2] hover:bg-[#FFFDF7] border border-[#E8DFC8]/60 transition-colors"
+                          >
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                              <img
+                                src={avail.imageUrl}
+                                alt={avail.name}
+                                className="w-8 h-8 rounded-lg object-cover border border-gray-200 shrink-0"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-semibold text-[#4A4E69] truncate">
+                                  {avail.name}
+                                </p>
+                                <span className="text-[11px] font-bold text-[#E58C8A]">
+                                  {storeConfig.currencySymbol}{avail.price.toFixed(2)}
+                                </span>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleAddItemToBundle(avail)}
+                              className="px-2.5 py-1 rounded-lg bg-[#E58C8A] text-white text-[11px] font-bold hover:brightness-105 transition-all shadow-2xs cursor-pointer ml-2 shrink-0"
+                            >
+                              + Añadir
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Step 1: Select Option if none chosen */}
               {!selectedMethod ? (
@@ -431,7 +651,7 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
                   </div>
 
                   <div className="p-3 bg-[#FFF9E6] rounded-xl border border-[#FFE0A3] text-xs text-[#B76E00]">
-                    🏪 Ingresa tus datos para registrar la reserva a tu nombre. Al confirmar, se notificará a la tienda por WhatsApp (+503 6868 7046) para coordinar tu visita.
+                    Ingresa tus datos para registrar la reserva a tu nombre. Al confirmar, se notificará a la tienda por WhatsApp (+503 6868 7046) para coordinar tu visita.
                   </div>
 
                   {formError && (
@@ -451,7 +671,7 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
                         id="input-store-donor-name"
                         type="text"
                         required
-                        placeholder="Ej: Sofía Morales o Tía Carmen"
+                        placeholder="Ej: Juan Pérez"
                         value={donorName}
                         onChange={(e) => {
                           setDonorName(e.target.value);
@@ -497,23 +717,28 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
                     />
                   </div>
 
-                  <div className="pt-3 border-t border-[#F2EAE0] flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedMethod(null)}
-                      className="px-3.5 py-2 rounded-xl text-xs font-bold text-[#8C90A4] hover:text-[#4A4E69] cursor-pointer"
-                    >
-                      Atrás
-                    </button>
-                    <button
-                      id="btn-confirm-reserve-store"
-                      type="submit"
-                      disabled={isSubmitting || !donorName.trim() || !donorPhone.trim()}
-                      className="px-5 py-2 rounded-xl bg-gradient-to-r from-[#E58C8A] to-[#F48B7A] text-white font-bold text-xs shadow-xs hover:brightness-105 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                    >
-                      <Sparkles className="w-3.5 h-3.5" />
-                      {isSubmitting ? 'Registrando...' : 'Confirmar y Notificar a Tienda'}
-                    </button>
+                  <div className="pt-3 border-t border-[#F2EAE0] flex items-center justify-between">
+                    <div className="text-xs font-extrabold text-[#4A4E69]">
+                      Total: <span className="text-[#E58C8A]">{storeConfig.currencySymbol}{totalAmount.toFixed(2)}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedMethod(null)}
+                        className="px-3.5 py-2 rounded-xl text-xs font-bold text-[#8C90A4] hover:text-[#4A4E69] cursor-pointer"
+                      >
+                        Atrás
+                      </button>
+                      <button
+                        id="btn-confirm-reserve-store"
+                        type="submit"
+                        disabled={isSubmitting || !donorName.trim() || !donorPhone.trim()}
+                        className="px-5 py-2 rounded-xl bg-gradient-to-r from-[#E58C8A] to-[#F48B7A] text-white font-bold text-xs shadow-xs hover:brightness-105 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        {isSubmitting ? 'Registrando...' : 'Confirmar y Notificar a Tienda'}
+                      </button>
+                    </div>
                   </div>
                 </form>
               ) : (
@@ -536,7 +761,7 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
                   </div>
 
                   <div className="p-3 bg-[#EFF6FF] rounded-xl border border-[#BFDBFE] text-xs text-[#1E40AF]">
-                    💬 Al confirmar, abriremos un chat de WhatsApp con la tienda (+503 6868 7046) pre-llenado con los datos del regalo para facilitarte el link de pago seguro.
+                    Al confirmar, abriremos un chat de WhatsApp con la tienda (+503 6868 7046) con el detalle de tus regalos para facilitarte el link de pago seguro.
                   </div>
 
                   {formError && (
@@ -556,7 +781,7 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
                         id="input-card-donor-name"
                         type="text"
                         required
-                        placeholder="Ej: Laura Méndez"
+                        placeholder="Ej: Juan Pérez"
                         value={donorName}
                         onChange={(e) => {
                           setDonorName(e.target.value);
@@ -602,23 +827,28 @@ export const GiftActionModal: React.FC<GiftActionModalProps> = ({
                     />
                   </div>
 
-                  <div className="pt-3 border-t border-[#F2EAE0] flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedMethod(null)}
-                      className="px-3.5 py-2 rounded-xl text-xs font-bold text-[#8C90A4] hover:text-[#4A4E69] cursor-pointer"
-                    >
-                      Atrás
-                    </button>
-                    <button
-                      id="btn-confirm-pay-card"
-                      type="submit"
-                      disabled={isSubmitting || !donorName.trim() || !donorPhone.trim()}
-                      className="px-5 py-2 rounded-xl bg-[#25D366] text-white font-bold text-xs shadow-xs hover:brightness-105 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                    >
-                      <MessageCircle className="w-4 h-4" />
-                      {isSubmitting ? 'Generando Enlace...' : 'Continuar a WhatsApp (+503 6868 7046)'}
-                    </button>
+                  <div className="pt-3 border-t border-[#F2EAE0] flex items-center justify-between">
+                    <div className="text-xs font-extrabold text-[#4A4E69]">
+                      Total: <span className="text-[#E58C8A]">{storeConfig.currencySymbol}{totalAmount.toFixed(2)}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedMethod(null)}
+                        className="px-3.5 py-2 rounded-xl text-xs font-bold text-[#8C90A4] hover:text-[#4A4E69] cursor-pointer"
+                      >
+                        Atrás
+                      </button>
+                      <button
+                        id="btn-confirm-pay-card"
+                        type="submit"
+                        disabled={isSubmitting || !donorName.trim() || !donorPhone.trim()}
+                        className="px-5 py-2 rounded-xl bg-[#25D366] text-white font-bold text-xs shadow-xs hover:brightness-105 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        <MessageCircle className="w-4 h-4" />
+                        {isSubmitting ? 'Generando Enlace...' : 'Continuar a WhatsApp (+503 6868 7046)'}
+                      </button>
+                    </div>
                   </div>
                 </form>
               )}

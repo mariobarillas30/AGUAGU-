@@ -38,7 +38,7 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate }) => {
             {!isGuestMesaView ? (
               <span className="px-3.5 py-1.5 rounded-full bg-[#FAF7F2] border border-[#E8DFC8]/60 text-[#5D5C5B] flex items-center gap-1.5">
                 <Heart className="w-3.5 h-3.5 text-[#FF8B8B] fill-[#FF8B8B]" />
-                Mesa de Regalos Oficial de Boutique Agu Agu
+                Mesa de Regalos Oficial de Agu Agu
               </span>
             ) : (
               <button

@@ -17,6 +17,7 @@ import {
   User,
   AlertCircle,
   Sparkles,
+  Clock,
 } from 'lucide-react';
 import { GiftTable, TableItem, Product, ItemStatus } from '../../types';
 import {
@@ -226,14 +227,31 @@ export const GiftTableDetailView: React.FC<GiftTableDetailViewProps> = ({
       <div className="bg-white rounded-3xl p-6 border border-[#F2EAE0] shadow-xs">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
           <div>
-            <div className="flex items-center gap-2 mb-1.5">
+            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
               <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-[#F7C8D0]/30 text-[#B85D6C]">
                 {currentTable.babyName ? `Baby ${currentTable.babyName}` : 'Mesa de Regalo'}
               </span>
+              {currentTable.gender && currentTable.gender !== 'No especificado' && (
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                  currentTable.gender.toLowerCase().includes('niñ') && currentTable.gender.toLowerCase().includes('a')
+                    ? 'bg-pink-100 text-pink-700'
+                    : currentTable.gender.toLowerCase().includes('niño')
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'bg-amber-100 text-amber-800'
+                }`}>
+                  {currentTable.gender}
+                </span>
+              )}
               <span className="text-xs text-[#8C90A4] flex items-center gap-1">
                 <Calendar className="w-3.5 h-3.5 text-[#E6B875]" />
                 Fecha: {currentTable.eventDate}
               </span>
+              {currentTable.eventTime && (
+                <span className="text-xs text-[#8C90A4] flex items-center gap-1">
+                  <Clock className="w-3.5 h-3.5 text-[#A8D8EA]" />
+                  Hora: {currentTable.eventTime}
+                </span>
+              )}
             </div>
 
             <h2 className="text-2xl sm:text-3xl font-heading font-bold text-[#4A4E69]">
