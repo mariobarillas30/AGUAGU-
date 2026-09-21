@@ -103,3 +103,11 @@ export interface DeletedGiftTable {
   items: TableItem[]; // Subcolección table_items completa con estados y reservas
   originalTableData?: Partial<GiftTable>;
 }
+
+export interface AdminProfile {
+  uid: string;
+  email?: string;
+  photoURL?: string;
+  displayName?: string;
+  updatedAt?: string;
+}

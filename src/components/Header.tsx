@@ -69,9 +69,27 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate }) => {
                       <ShieldCheck className="w-3.5 h-3.5" />
                       <span>Panel de Tienda</span>
                     </button>
-                    <div className="w-8 h-8 rounded-full border-2 border-pink-200 bg-[#F7C8D0] flex items-center justify-center text-xs font-bold text-[#D64E66]" title={user.email || 'Admin'}>
-                      👑
-                    </div>
+                    {user.photoURL ? (
+                      <img
+                        src={user.photoURL}
+                        alt="Foto de perfil del Administrador"
+                        className="w-8 h-8 rounded-full object-cover border-2 border-pink-200 shadow-2xs cursor-pointer hover:opacity-90 transition-opacity"
+                        referrerPolicy="no-referrer"
+                        onClick={() => onNavigate('admin')}
+                        title={user.email || 'Administrador'}
+                        onError={(e) => {
+                          (e.currentTarget as HTMLElement).style.display = 'none';
+                        }}
+                      />
+                    ) : (
+                      <div
+                        className="w-8 h-8 rounded-full border-2 border-pink-200 bg-[#F7C8D0] flex items-center justify-center text-xs font-bold text-[#D64E66] cursor-pointer"
+                        onClick={() => onNavigate('admin')}
+                        title={user.email || 'Admin'}
+                      >
+                        👑
+                      </div>
+                    )}
                   </>
                 ) : (
                   <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1">

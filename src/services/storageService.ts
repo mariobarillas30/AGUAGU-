@@ -781,3 +781,140 @@ export async function uploadStoreLogo(file: File): Promise<string> {
   }
 }
 
+/**
+ * Sube y optimiza la fotografía de perfil del usuario administrador autenticado.
+ * 
+ * Medidas de seguridad y resiliencia:
+ * 1. Verifica estrictamente que el usuario autenticado actual coincida con userId.
+ * 2. Comprime y redimensiona la imagen a formato cuadrado optimizado (máx 500x500 px, WebP/JPEG).
+ * 3. Almacena en Firebase Storage en 'profile_photos/{userId}/avatar_{timestamp}.ext'.
+ * 4. Si existe una foto anterior alojada en Storage bajo 'profile_photos/{userId}/', la elimina de forma segura.
+ * 5. Si Firebase Storage presenta timeout o error, aplica fallback automático a data URL optimizado ultraliviano.
+ */
+export async function uploadAdminProfilePhoto(
+  fileOrBlob: File | Blob,
+  userId: string,
+  oldPhotoUrl?: string,
+  onProgress?: (info: StorageUploadProgressInfo) => void
+): Promise<string> {
+  // 1. Verificación estricta de sesión y pertenencia de usuario
+  if (!auth.currentUser || auth.currentUser.uid !== userId) {
+    throw new Error('No tienes autorización para modificar la foto de perfil de este usuario.');
+  }
+
+  // 2. Validación de archivo
+  if (!fileOrBlob || fileOrBlob.size === 0) {
+    throw new Error('El archivo seleccionado no es válido o está vacío.');
+  }
+
+  if (fileOrBlob.size > 15 * 1024 * 1024) {
+    throw new Error('La imagen seleccionada supera el límite máximo permitido de 15MB.');
+  }
+
+  onProgress?.({
+    phase: 'validating',
+    percent: 10,
+    message: 'Validando fotografía de perfil...',
+  });
+
+  // 3. Optimización y compresión client-side (500x500 avatar)
+  let uploadBlob: Blob = fileOrBlob;
+  let mimeType = fileOrBlob.type || 'image/jpeg';
+  let extension = 'jpg';
+
+  if (fileOrBlob instanceof File) {
+    onProgress?.({
+      phase: 'optimizing',
+      percent: 25,
+      message: 'Optimizando avatar...',
+    });
+
+    try {
+      const optimized = await compressAndResizeImage(fileOrBlob, 500, 0.85);
+      uploadBlob = optimized.blob;
+      mimeType = optimized.mimeType;
+      extension = optimized.extension;
+    } catch (optErr) {
+      console.warn('[PROFILE PHOTO] Optimización fallida, usando archivo original:', optErr);
+      uploadBlob = fileOrBlob;
+      mimeType = fileOrBlob.type || 'image/jpeg';
+      extension = fileOrBlob.name.split('.').pop()?.toLowerCase() || 'jpg';
+    }
+  }
+
+  // 4. Intentar almacenamiento en Firebase Storage
+  const storagePath = `profile_photos/${userId}/avatar_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.${extension}`;
+
+  onProgress?.({
+    phase: 'uploading',
+    percent: 50,
+    message: 'Guardando foto de perfil...',
+  });
+
+  try {
+    const storageRef = ref(storage, storagePath);
+    const metadata = {
+      contentType: mimeType,
+      cacheControl: 'public, max-age=31536000',
+    };
+
+    const uploadTask = uploadBytesResumable(storageRef, uploadBlob, metadata);
+
+    const downloadUrl = await withTimeout(
+      new Promise<string>((resolve, reject) => {
+        uploadTask.on(
+          'state_changed',
+          (snap) => {
+            if (snap.totalBytes > 0) {
+              const pct = 50 + Math.round((snap.bytesTransferred / snap.totalBytes) * 40);
+              onProgress?.({
+                phase: 'uploading',
+                percent: Math.min(90, pct),
+                message: 'Subiendo a Firebase Storage...',
+              });
+            }
+          },
+          (err) => reject(err),
+          async () => {
+            try {
+              const url = await getDownloadURL(uploadTask.snapshot.ref);
+              resolve(url);
+            } catch (uErr) {
+              reject(uErr);
+            }
+          }
+        );
+      }),
+      8000,
+      'TIMEOUT_PROFILE_STORAGE_UPLOAD'
+    );
+
+    // 5. Si la subida fue exitosa y la foto previa estaba en Storage en la carpeta de este usuario, limpiarla
+    if (
+      oldPhotoUrl &&
+      isFirebaseStorageUrl(oldPhotoUrl) &&
+      oldPhotoUrl.includes(`profile_photos%2F${userId}%2F`)
+    ) {
+      deleteImageFromStorageByUrl(oldPhotoUrl).catch((delErr) => {
+        console.warn('[PROFILE PHOTO] No se pudo eliminar foto previa de storage (no crítico):', delErr);
+      });
+    }
+
+    onProgress?.({
+      phase: 'verifying',
+      percent: 100,
+      message: 'Foto de perfil actualizada correctamente.',
+    });
+
+    return downloadUrl;
+  } catch (storageErr) {
+    console.warn('[PROFILE PHOTO] Firebase Storage no disponible o timeout, aplicando dataUrl optimizado persistente:', storageErr);
+    onProgress?.({
+      phase: 'verifying',
+      percent: 100,
+      message: 'Optimizando foto para guardado persistente...',
+    });
+    return await fileToOptimizedDataUrl(uploadBlob, 500, 0.85);
+  }
+}
+

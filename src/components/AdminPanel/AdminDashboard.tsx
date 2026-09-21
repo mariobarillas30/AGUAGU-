@@ -30,6 +30,9 @@ import {
   ChevronRight,
   RefreshCw,
   Terminal,
+  Camera,
+  User as UserIcon,
+  X,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { Product, GiftTable, TableItem, ExtraProduct, StoreConfig, DeletedGiftTable } from '../../types';
@@ -60,10 +63,10 @@ import { ImportInventoryModal } from './ImportInventoryModal';
 import { GiftTableDetailView } from './GiftTableDetailView';
 import { AguAguLogo } from '../common/AguAguLogo';
 import { ConfirmDialog } from '../common/ConfirmDialog';
-import { uploadStoreLogo } from '../../services/storageService';
+import { uploadStoreLogo, uploadAdminProfilePhoto } from '../../services/storageService';
 
 export const AdminDashboard: React.FC = () => {
-  const { user, isAdmin, logout } = useAuth();
+  const { user, isAdmin, logout, updateUserProfilePhoto } = useAuth();
   const [activeTab, setActiveTab] = useState<'tables' | 'trash' | 'inventory' | 'extras' | 'config' | 'backups'>('tables');
   
   // Data states
@@ -112,6 +115,15 @@ export const AdminDashboard: React.FC = () => {
   const [editingProduct, setEditingProduct] = useState<Product | ExtraProduct | null>(null);
   const [productModalMode, setProductModalMode] = useState<'inventory' | 'extra'>('inventory');
   const [isCreateTableModalOpen, setIsCreateTableModalOpen] = useState(false);
+
+  // Admin Profile Photo State
+  const profileFileInputRef = React.useRef<HTMLInputElement>(null);
+  const [selectedProfileFile, setSelectedProfileFile] = useState<File | null>(null);
+  const [profilePreviewUrl, setProfilePreviewUrl] = useState<string | null>(null);
+  const [isUploadingProfilePhoto, setIsUploadingProfilePhoto] = useState(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [profileSuccessMessage, setProfileSuccessMessage] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
 
   // Search in inventory
   const [inventorySearch, setInventorySearch] = useState('');
@@ -563,6 +575,109 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  // Profile Photo Handlers
+  const handleProfileFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setProfileError(null);
+    setProfileSuccessMessage(false);
+
+    // Validate type: JPG, JPEG, PNG, WebP
+    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    const isMimeValid = validTypes.includes(file.type.toLowerCase());
+    const isExtensionValid = Boolean(file.name.match(/\.(jpg|jpeg|png|webp)$/i));
+
+    if (!isMimeValid && !isExtensionValid) {
+      setProfileError('Formato no compatible. Por favor selecciona una imagen en formato JPG, PNG o WebP.');
+      if (profileFileInputRef.current) profileFileInputRef.current.value = '';
+      return;
+    }
+
+    // Validate size (< 15MB)
+    if (file.size > 15 * 1024 * 1024) {
+      setProfileError('La imagen es demasiado pesada. El tamaño máximo permitido es de 15MB.');
+      if (profileFileInputRef.current) profileFileInputRef.current.value = '';
+      return;
+    }
+
+    setSelectedProfileFile(file);
+    const objectUrl = URL.createObjectURL(file);
+    setProfilePreviewUrl(objectUrl);
+    setIsProfileModalOpen(true);
+  };
+
+  const handleSaveProfilePhoto = async () => {
+    if (!selectedProfileFile || !user) {
+      setProfileError('No se ha seleccionado ninguna foto o la sesión no es válida.');
+      return;
+    }
+
+    setIsUploadingProfilePhoto(true);
+    setProfileError(null);
+
+    try {
+      const newPhotoUrl = await uploadAdminProfilePhoto(
+        selectedProfileFile,
+        user.uid,
+        user.photoURL || undefined
+      );
+
+      await updateUserProfilePhoto(newPhotoUrl);
+
+      if (profilePreviewUrl) {
+        URL.revokeObjectURL(profilePreviewUrl);
+      }
+      setSelectedProfileFile(null);
+      setProfilePreviewUrl(null);
+      setIsProfileModalOpen(false);
+      setProfileSuccessMessage(true);
+      showToast('¡Foto de perfil actualizada exitosamente!', 'success');
+
+      if (profileFileInputRef.current) {
+        profileFileInputRef.current.value = '';
+      }
+    } catch (err: any) {
+      console.error('[PROFILE PHOTO SAVE ERROR]:', err);
+      setProfileError(err?.message || 'Error al guardar la foto de perfil. Inténtalo de nuevo.');
+      showToast('No se pudo actualizar la foto de perfil.', 'info');
+    } finally {
+      setIsUploadingProfilePhoto(false);
+    }
+  };
+
+  const handleCancelProfilePreview = () => {
+    if (profilePreviewUrl) {
+      URL.revokeObjectURL(profilePreviewUrl);
+    }
+    setSelectedProfileFile(null);
+    setProfilePreviewUrl(null);
+    setProfileError(null);
+    setIsProfileModalOpen(false);
+    if (profileFileInputRef.current) {
+      profileFileInputRef.current.value = '';
+    }
+  };
+
+  const handleResetProfilePhoto = () => {
+    setConfirmDialog({
+      isOpen: true,
+      title: '¿Restablecer foto de perfil?',
+      message: 'Se eliminará tu foto de perfil personalizada y se mostrará el avatar predeterminado de Agu Agu.',
+      confirmLabel: 'Restablecer Avatar',
+      variant: 'primary',
+      onConfirm: async () => {
+        try {
+          await updateUserProfilePhoto('');
+          showToast('Foto de perfil restablecida al avatar predeterminado.', 'success');
+        } catch (err: any) {
+          console.error('Error al restablecer foto de perfil:', err);
+          showToast('No se pudo restablecer la foto de perfil.', 'info');
+        }
+      },
+    });
+  };
+
   const filteredInventory = products.filter((p) =>
     p.name.toLowerCase().includes(inventorySearch.toLowerCase()) ||
     (p.category && p.category.toLowerCase().includes(inventorySearch.toLowerCase()))
@@ -580,9 +695,28 @@ export const AdminDashboard: React.FC = () => {
                 <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-[#E0F2F1] text-[#00897B] border border-[#B2DFDB]">
                   Panel de Tienda
                 </span>
-                <span className="text-xs text-[#8E8D8A] truncate max-w-[180px] sm:max-w-xs" title={user?.email || ''}>
-                  {user?.email || 'Administrador Autorizado'}
-                </span>
+                <div
+                  onClick={() => setActiveTab('config')}
+                  className="flex items-center gap-1.5 cursor-pointer group"
+                  title="Administrador autenticado - Clic para ver configuración y foto"
+                >
+                  {user?.photoURL ? (
+                    <img
+                      src={user.photoURL}
+                      alt="Foto del Administrador"
+                      className="w-5 h-5 rounded-full object-cover border border-pink-300 shadow-2xs group-hover:scale-105 transition-transform"
+                      referrerPolicy="no-referrer"
+                      onError={(e) => {
+                        (e.currentTarget as HTMLElement).style.display = 'none';
+                      }}
+                    />
+                  ) : (
+                    <span className="text-xs">👑</span>
+                  )}
+                  <span className="text-xs text-[#8E8D8A] group-hover:text-[#4A4A4A] transition-colors truncate max-w-[180px] sm:max-w-xs font-medium">
+                    {user?.email || 'Administrador Autorizado'}
+                  </span>
+                </div>
               </div>
               <h1 className="text-2xl sm:text-3xl font-heading font-bold text-[#4A4A4A]">
                 Agu Agu - Mesa de Regalos
@@ -592,7 +726,7 @@ export const AdminDashboard: React.FC = () => {
 
           <button
             onClick={() => logout()}
-            className="md:hidden p-2 rounded-xl text-[#8E8D8A] hover:text-red-500 hover:bg-red-50 transition-colors"
+            className="md:hidden p-2 rounded-xl text-[#8E8D8A] hover:text-red-500 hover:bg-red-50 transition-colors cursor-pointer"
             title="Cerrar sesión"
           >
             <LogOut className="w-5 h-5" />
@@ -683,7 +817,7 @@ export const AdminDashboard: React.FC = () => {
             }`}
           >
             <Settings className="w-4 h-4" />
-            Configuración WhatsApp
+            Configuración & Perfil
           </button>
 
           <button
@@ -1374,190 +1508,320 @@ export const AdminDashboard: React.FC = () => {
           )}
 
           {/* ================================================================= */}
-          {/* TAB 4: CONFIGURACIÓN DE WHATSAPP Y TIENDA */}
+          {/* TAB 4: CONFIGURACIÓN & PERFIL */}
           {/* ================================================================= */}
           {activeTab === 'config' && (
-            <div className="max-w-2xl mx-auto bg-white rounded-3xl p-6 sm:p-8 border border-gray-100 shadow-sm">
-              <div className="flex items-center gap-3 mb-6 pb-6 border-b border-gray-100">
-                <div className="w-12 h-12 rounded-2xl bg-[#E0F2F1] flex items-center justify-center text-[#25D366] shadow-xs">
-                  <Phone className="w-6 h-6" />
+            <div className="max-w-2xl mx-auto space-y-8">
+              {/* ------------------------------------------------------------- */}
+              {/* SECCIÓN 1: FOTO DE PERFIL DEL ADMINISTRADOR */}
+              {/* ------------------------------------------------------------- */}
+              <div className="bg-white rounded-3xl p-6 sm:p-8 border border-gray-100 shadow-sm">
+                <div className="flex items-center gap-3 mb-6 pb-6 border-b border-gray-100">
+                  <div className="w-12 h-12 rounded-2xl bg-pink-50 flex items-center justify-center text-[#FF8B8B] shadow-xs">
+                    <Camera className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h2 className="font-heading font-bold text-xl text-[#4A4A4A]">
+                      Foto de Perfil del Administrador
+                    </h2>
+                    <p className="text-xs text-[#8E8D8A]">
+                      Personaliza la fotografía visible en el panel administrativo y la barra superior
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <h2 className="font-heading font-bold text-xl text-[#4A4A4A]">
-                    Configuración de WhatsApp de la Tienda
-                  </h2>
-                  <p className="text-xs text-[#8E8D8A]">
-                    Número receptor para pagos con tarjeta y consultas de invitados
-                  </p>
-                </div>
-              </div>
 
-              {configSaved && (
-                <div className="mb-6 p-4 rounded-2xl bg-[#E0F2F1] border border-[#B2DFDB] text-xs font-bold text-[#00897B] flex items-center gap-2">
-                  <Check className="w-4 h-4" />
-                  ¡Configuración guardada exitosamente en Firestore!
-                </div>
-              )}
+                {profileSuccessMessage && (
+                  <div className="mb-6 p-4 rounded-2xl bg-[#E0F2F1] border border-[#B2DFDB] text-xs font-bold text-[#00897B] flex items-center gap-2 animate-in fade-in">
+                    <Check className="w-4 h-4 shrink-0" />
+                    ¡Foto de perfil actualizada exitosamente!
+                  </div>
+                )}
 
-              <form onSubmit={handleSaveConfig} className="space-y-6">
-                {/* Store Logo Management Section */}
+                {profileError && (
+                  <div className="mb-6 p-4 rounded-2xl bg-red-50 border border-red-200 text-xs font-bold text-red-700 flex items-center gap-2 animate-in fade-in">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    {profileError}
+                  </div>
+                )}
+
                 <div className="p-5 rounded-3xl bg-[#FAF7F2] border border-[#E8DFC8]/60">
-                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
                     <div className="flex items-center gap-4">
-                      <div className="p-1 rounded-2xl bg-white shadow-xs border border-gray-100">
-                        <AguAguLogo size="lg" showText={false} customLogoUrl={logoUrlInput || undefined} />
+                      {/* Foto actual o avatar predeterminado */}
+                      <div className="relative group">
+                        {user?.photoURL ? (
+                          <img
+                            src={user.photoURL}
+                            alt="Foto de perfil actual"
+                            className="w-20 h-20 rounded-2xl object-cover border-2 border-pink-200 shadow-sm"
+                            referrerPolicy="no-referrer"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <div className="w-20 h-20 rounded-2xl border-2 border-pink-200 bg-[#F7C8D0] flex flex-col items-center justify-center text-[#D64E66] shadow-sm">
+                            <span className="text-2xl">👑</span>
+                            <span className="text-[10px] font-extrabold mt-0.5">Agu Agu</span>
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          id="btn-quick-avatar-camera"
+                          onClick={() => profileFileInputRef.current?.click()}
+                          className="absolute -bottom-1 -right-1 p-1.5 rounded-xl bg-white border border-pink-200 text-[#FF8B8B] shadow-2xs hover:bg-pink-50 transition-colors cursor-pointer"
+                          title="Cambiar foto de perfil"
+                        >
+                          <Camera className="w-3.5 h-3.5" />
+                        </button>
                       </div>
+
                       <div>
-                        <h4 className="text-sm font-heading font-bold text-[#4A4E69] flex items-center gap-2">
-                          Logotipo de la Tienda
-                          {logoUrlInput ? (
+                        <div className="flex items-center gap-2 mb-1">
+                          <h4 className="text-sm font-heading font-bold text-[#4A4E69]">
+                            Foto de perfil
+                          </h4>
+                          {user?.photoURL ? (
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-100 text-green-700">
-                              Personalizado
+                              Personalizada
                             </span>
                           ) : (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FAF7F2] border border-gray-200 text-[#8C90A4]">
-                              Predeterminado
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-white border border-gray-200 text-[#8C90A4]">
+                              Predeterminada
                             </span>
                           )}
-                        </h4>
-                        <p className="text-xs text-[#8C90A4] mt-0.5">
-                          Este logotipo se muestra en la barra de navegación, pie de página y mesas públicas.
+                        </div>
+                        <p className="text-xs text-[#5D5C5B] font-medium">
+                          {user?.email || 'Administrador'}
+                        </p>
+                        <p className="text-[11px] text-[#8C90A4] mt-0.5">
+                          Admite imágenes JPG, PNG y WebP desde computadora, celular o tablet.
                         </p>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 w-full sm:w-auto">
+                    <div className="flex items-center gap-2.5 w-full sm:w-auto">
                       <input
-                        ref={logoFileInputRef}
+                        ref={profileFileInputRef}
                         type="file"
-                        accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                        accept="image/jpeg,image/png,image/webp"
                         className="hidden"
-                        onChange={handleLogoFileChange}
+                        onChange={handleProfileFileChange}
                       />
+
                       <button
                         type="button"
-                        id="btn-upload-logo"
-                        disabled={isUploadingLogo}
-                        onClick={() => logoFileInputRef.current?.click()}
-                        className="px-4 py-2 rounded-xl bg-white border border-[#E2D9CF] text-xs font-bold text-[#4A4E69] hover:bg-[#FAF7F2] transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer disabled:opacity-50"
+                        id="btn-change-profile-photo"
+                        disabled={isUploadingProfilePhoto}
+                        onClick={() => profileFileInputRef.current?.click()}
+                        className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl bg-[#FF8B8B] text-white text-xs font-bold shadow-xs shadow-pink-200/60 hover:bg-[#ff7a7a] active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
                       >
-                        {isUploadingLogo ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin text-[#FF8B8B]" />
-                        ) : (
-                          <Upload className="w-3.5 h-3.5 text-[#FF8B8B]" />
-                        )}
-                        <span>{logoUrlInput ? 'Cambiar Logotipo' : 'Subir Logotipo'}</span>
+                        <Upload className="w-3.5 h-3.5 text-white" />
+                        <span>Cambiar foto</span>
                       </button>
 
-                      {logoUrlInput && (
+                      {user?.photoURL && (
                         <button
                           type="button"
-                          id="btn-reset-logo"
-                          disabled={isUploadingLogo}
-                          onClick={handleResetLogo}
-                          className="px-3 py-2 rounded-xl bg-white border border-gray-200 text-xs font-semibold text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                          id="btn-reset-profile-photo"
+                          disabled={isUploadingProfilePhoto}
+                          onClick={handleResetProfilePhoto}
+                          className="px-3.5 py-2.5 rounded-xl bg-white border border-gray-200 text-xs font-semibold text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                          title="Quitar foto personalizada"
                         >
-                          Restablecer
+                          Quitar foto
                         </button>
                       )}
                     </div>
                   </div>
                 </div>
+              </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#5D5C5B] mb-1.5">
-                    Número de WhatsApp de la Tienda (con código de país) *
-                  </label>
-                  <div className="relative">
-                    <Phone className="w-4 h-4 text-[#8E8D8A] absolute left-3.5 top-3" />
-                    <input
-                      id="input-whatsapp-number"
-                      type="text"
-                      required
-                      placeholder="Ej: 50368687046 o +503 6868 7046"
-                      value={whatsappInput}
-                      onChange={(e) => setWhatsappInput(e.target.value)}
-                      className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 bg-[#FDFBF7] text-sm text-[#4A4A4A] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
-                    />
+              {/* ------------------------------------------------------------- */}
+              {/* SECCIÓN 2: CONFIGURACIÓN DE WHATSAPP Y TIENDA */}
+              {/* ------------------------------------------------------------- */}
+              <div className="bg-white rounded-3xl p-6 sm:p-8 border border-gray-100 shadow-sm">
+                <div className="flex items-center gap-3 mb-6 pb-6 border-b border-gray-100">
+                  <div className="w-12 h-12 rounded-2xl bg-[#E0F2F1] flex items-center justify-center text-[#25D366] shadow-xs">
+                    <Phone className="w-6 h-6" />
                   </div>
-                  <p className="text-[11px] text-[#8E8D8A] mt-1">
-                    Solo dígitos numéricos incluyendo el código de país (ej. 503 para El Salvador: 50368687046, 502 para Guatemala, 52 para México).
-                  </p>
+                  <div>
+                    <h2 className="font-heading font-bold text-xl text-[#4A4A4A]">
+                      Configuración de WhatsApp de la Tienda
+                    </h2>
+                    <p className="text-xs text-[#8E8D8A]">
+                      Número receptor para pagos con tarjeta y consultas de invitados
+                    </p>
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {configSaved && (
+                  <div className="mb-6 p-4 rounded-2xl bg-[#E0F2F1] border border-[#B2DFDB] text-xs font-bold text-[#00897B] flex items-center gap-2">
+                    <Check className="w-4 h-4" />
+                    ¡Configuración guardada exitosamente en Firestore!
+                  </div>
+                )}
+
+                <form onSubmit={handleSaveConfig} className="space-y-6">
+                  {/* Store Logo Management Section */}
+                  <div className="p-5 rounded-3xl bg-[#FAF7F2] border border-[#E8DFC8]/60">
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                      <div className="flex items-center gap-4">
+                        <div className="p-1 rounded-2xl bg-white shadow-xs border border-gray-100">
+                          <AguAguLogo size="lg" showText={false} customLogoUrl={logoUrlInput || undefined} />
+                        </div>
+                        <div>
+                          <h4 className="text-sm font-heading font-bold text-[#4A4E69] flex items-center gap-2">
+                            Logotipo de la Tienda
+                            {logoUrlInput ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-100 text-green-700">
+                                Personalizado
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FAF7F2] border border-gray-200 text-[#8C90A4]">
+                                Predeterminado
+                              </span>
+                            )}
+                          </h4>
+                          <p className="text-xs text-[#8C90A4] mt-0.5">
+                            Este logotipo se muestra en la barra de navegación, pie de página y mesas públicas.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 w-full sm:w-auto">
+                        <input
+                          ref={logoFileInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                          className="hidden"
+                          onChange={handleLogoFileChange}
+                        />
+                        <button
+                          type="button"
+                          id="btn-upload-logo"
+                          disabled={isUploadingLogo}
+                          onClick={() => logoFileInputRef.current?.click()}
+                          className="px-4 py-2 rounded-xl bg-white border border-[#E2D9CF] text-xs font-bold text-[#4A4E69] hover:bg-[#FAF7F2] transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer disabled:opacity-50"
+                        >
+                          {isUploadingLogo ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-[#FF8B8B]" />
+                          ) : (
+                            <Upload className="w-3.5 h-3.5 text-[#FF8B8B]" />
+                          )}
+                          <span>{logoUrlInput ? 'Cambiar Logotipo' : 'Subir Logotipo'}</span>
+                        </button>
+
+                        {logoUrlInput && (
+                          <button
+                            type="button"
+                            id="btn-reset-logo"
+                            disabled={isUploadingLogo}
+                            onClick={handleResetLogo}
+                            className="px-3 py-2 rounded-xl bg-white border border-gray-200 text-xs font-semibold text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                          >
+                            Restablecer
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
                   <div>
                     <label className="block text-xs font-bold text-[#5D5C5B] mb-1.5">
-                      Nombre de la Tienda *
+                      Número de WhatsApp de la Tienda (con código de país) *
                     </label>
-                    <input
-                      id="input-store-name"
-                      type="text"
-                      required
-                      value={storeNameInput}
-                      onChange={(e) => setStoreNameInput(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-[#FDFBF7] text-sm text-[#4A4A4A] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
-                    />
+                    <div className="relative">
+                      <Phone className="w-4 h-4 text-[#8E8D8A] absolute left-3.5 top-3" />
+                      <input
+                        id="input-whatsapp-number"
+                        type="text"
+                        required
+                        placeholder="Ej: 50368687046 o +503 6868 7046"
+                        value={whatsappInput}
+                        onChange={(e) => setWhatsappInput(e.target.value)}
+                        className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 bg-[#FDFBF7] text-sm text-[#4A4A4A] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
+                      />
+                    </div>
+                    <p className="text-[11px] text-[#8E8D8A] mt-1">
+                      Solo dígitos numéricos incluyendo el código de país (ej. 503 para El Salvador: 50368687046, 502 para Guatemala, 52 para México).
+                    </p>
                   </div>
 
-                  <div>
-                    <label className="block text-xs font-bold text-[#5D5C5B] mb-1.5">
-                      Símbolo de Moneda *
-                    </label>
-                    <input
-                      id="input-currency-symbol"
-                      type="text"
-                      required
-                      placeholder="Ej: $ o Q o €"
-                      value={currencyInput}
-                      onChange={(e) => setCurrencyInput(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-[#FDFBF7] text-sm text-[#4A4A4A] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
-                    />
-                  </div>
-                </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-[#5D5C5B] mb-1.5">
+                        Nombre de la Tienda *
+                      </label>
+                      <input
+                        id="input-store-name"
+                        type="text"
+                        required
+                        value={storeNameInput}
+                        onChange={(e) => setStoreNameInput(e.target.value)}
+                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-[#FDFBF7] text-sm text-[#4A4A4A] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
+                      />
+                    </div>
 
-                {/* Professional WhatsApp Message Preview (Strictly NO EMOJIS) */}
-                <div className="p-4 rounded-2xl bg-[#FDFBF7] border border-gray-100 space-y-2">
-                  <span className="block text-xs font-bold text-[#4A4A4A]">
-                    Vista Previa del Mensaje Formal que Recibirá la Tienda (Sin Emojis):
-                  </span>
-                  <div className="p-3 bg-white rounded-xl text-xs text-[#2A4D34] font-mono whitespace-pre-line border border-[#E2D9CF]/60 shadow-2xs leading-relaxed">
-                    Estimado equipo de {storeNameInput || 'Agu Agu'},{'\n'}
-                    {'\n'}
-                    Le saluda María Fernández. Deseo confirmar la reserva en tienda física de regalo(s) correspondiente a la siguiente mesa de regalos:{'\n'}
-                    {'\n'}
-                    Mesa / Evento: Baby Shower Sofía (#mesa/sofia-castro){'\n'}
-                    Modalidad: Pago y retiro en tienda física{'\n'}
-                    {'\n'}
-                    Detalle de regalo(s) seleccionado(s):{'\n'}
-                    - Cuna Nórdica de Madera | Cantidad: 1 | Precio: {currencyInput}280.00{'\n'}
-                    - Set de Sábanas de Algodón | Cantidad: 1 | Precio: {currencyInput}35.00{'\n'}
-                    {'\n'}
-                    Total a cancelar en tienda: {currencyInput}315.00{'\n'}
-                    Codigo de referencia: TIENDA-L92K-8B{'\n'}
-                    {'\n'}
-                    Datos de contacto de quien reserva:{'\n'}
-                    - Nombre: María Fernández{'\n'}
-                    - Telefono: +503 7123-4567{'\n'}
-                    {'\n'}
-                    Agradezco me confirmen la disponibilidad del pedido y los pasos para presentarme a realizar el pago en tienda.{'\n'}
-                    {'\n'}
-                    Atentamente,{'\n'}
-                    María Fernández
+                    <div>
+                      <label className="block text-xs font-bold text-[#5D5C5B] mb-1.5">
+                        Símbolo de Moneda *
+                      </label>
+                      <input
+                        id="input-currency-symbol"
+                        type="text"
+                        required
+                        placeholder="Ej: $ o Q o €"
+                        value={currencyInput}
+                        onChange={(e) => setCurrencyInput(e.target.value)}
+                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 bg-[#FDFBF7] text-sm text-[#4A4A4A] focus:outline-none focus:ring-2 focus:ring-[#A8D8EA]"
+                      />
+                    </div>
                   </div>
-                </div>
 
-                <div className="pt-4 flex justify-end">
-                  <button
-                    id="btn-save-store-config"
-                    type="submit"
-                    className="px-6 py-2.5 rounded-xl bg-[#FF8B8B] text-white font-bold text-xs shadow-md shadow-pink-200/50 hover:bg-[#ff7a7a] active:scale-95 transition-all flex items-center gap-2 cursor-pointer"
-                  >
-                    <Sparkles className="w-4 h-4 text-[#FFEAA7]" />
-                    Guardar Configuración
-                  </button>
-                </div>
-              </form>
+                  {/* Professional WhatsApp Message Preview (Strictly NO EMOJIS) */}
+                  <div className="p-4 rounded-2xl bg-[#FDFBF7] border border-gray-100 space-y-2">
+                    <span className="block text-xs font-bold text-[#4A4A4A]">
+                      Vista Previa del Mensaje Formal que Recibirá la Tienda (Sin Emojis):
+                    </span>
+                    <div className="p-3 bg-white rounded-xl text-xs text-[#2A4D34] font-mono whitespace-pre-line border border-[#E2D9CF]/60 shadow-2xs leading-relaxed">
+                      Estimado equipo de {storeNameInput || 'Agu Agu'},{'\n'}
+                      {'\n'}
+                      Le saluda María Fernández. Deseo confirmar la reserva en tienda física de regalo(s) correspondiente a la siguiente mesa de regalos:{'\n'}
+                      {'\n'}
+                      Mesa / Evento: Baby Shower Sofía (#mesa/sofia-castro){'\n'}
+                      Modalidad: Pago y retiro en tienda física{'\n'}
+                      {'\n'}
+                      Detalle de regalo(s) seleccionado(s):{'\n'}
+                      - Cuna Nórdica de Madera | Cantidad: 1 | Precio: {currencyInput}280.00{'\n'}
+                      - Set de Sábanas de Algodón | Cantidad: 1 | Precio: {currencyInput}35.00{'\n'}
+                      {'\n'}
+                      Total a cancelar en tienda: {currencyInput}315.00{'\n'}
+                      Codigo de referencia: TIENDA-L92K-8B{'\n'}
+                      {'\n'}
+                      Datos de contacto de quien reserva:{'\n'}
+                      - Nombre: María Fernández{'\n'}
+                      - Telefono: +503 7123-4567{'\n'}
+                      {'\n'}
+                      Agradezco me confirmen la disponibilidad del pedido y los pasos para presentarme a realizar el pago en tienda.{'\n'}
+                      {'\n'}
+                      Atentamente,{'\n'}
+                      María Fernández
+                    </div>
+                  </div>
+
+                  <div className="pt-4 flex justify-end">
+                    <button
+                      id="btn-save-store-config"
+                      type="submit"
+                      className="px-6 py-2.5 rounded-xl bg-[#FF8B8B] text-white font-bold text-xs shadow-md shadow-pink-200/50 hover:bg-[#ff7a7a] active:scale-95 transition-all flex items-center gap-2 cursor-pointer"
+                    >
+                      <Sparkles className="w-4 h-4 text-[#FFEAA7]" />
+                      Guardar Configuración
+                    </button>
+                  </div>
+                </form>
+              </div>
             </div>
           )}
 
@@ -1799,6 +2063,101 @@ export const AdminDashboard: React.FC = () => {
           showToast('¡Mesa de regalos creada con éxito!');
         }}
       />
+
+      {/* Profile Photo Preview & Confirmation Modal */}
+      {isProfileModalOpen && profilePreviewUrl && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-gray-100 space-y-6">
+            <div className="flex items-center justify-between pb-4 border-b border-gray-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-pink-50 flex items-center justify-center text-[#FF8B8B]">
+                  <Camera className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-heading font-bold text-base text-[#4A4A4A]">
+                    Vista Previa de la Nueva Foto
+                  </h3>
+                  <p className="text-[11px] text-[#8E8D8A]">
+                    Confirma el cambio antes de guardar tu nueva foto de perfil
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleCancelProfilePreview}
+                disabled={isUploadingProfilePhoto}
+                className="p-1.5 rounded-xl text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {profileError && (
+              <div className="p-3.5 rounded-2xl bg-red-50 border border-red-200 text-xs text-red-700 flex items-center gap-2 font-medium">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{profileError}</span>
+              </div>
+            )}
+
+            {/* Preview container */}
+            <div className="flex flex-col items-center justify-center py-4 bg-[#FAF7F2] rounded-2xl border border-[#E8DFC8]/60">
+              <div className="relative">
+                <img
+                  src={profilePreviewUrl}
+                  alt="Vista previa de la nueva foto"
+                  className="w-32 h-32 rounded-3xl object-cover border-4 border-white shadow-md ring-2 ring-pink-200"
+                />
+                <span className="absolute -top-2 -right-2 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-[#FF8B8B] text-white shadow-xs">
+                  Nueva
+                </span>
+              </div>
+              
+              {selectedProfileFile && (
+                <div className="mt-4 text-center px-4">
+                  <p className="text-xs font-bold text-[#4A4E69] truncate max-w-[240px]">
+                    {selectedProfileFile.name}
+                  </p>
+                  <p className="text-[11px] text-[#8C90A4] mt-0.5">
+                    {(selectedProfileFile.size / 1024).toFixed(1)} KB • {selectedProfileFile.type || 'Imagen'}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                id="btn-cancel-profile-photo"
+                disabled={isUploadingProfilePhoto}
+                onClick={handleCancelProfilePreview}
+                className="px-4 py-2.5 rounded-xl bg-gray-100 text-[#5D5C5B] font-bold text-xs hover:bg-gray-200 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+
+              <button
+                type="button"
+                id="btn-confirm-save-profile-photo"
+                disabled={isUploadingProfilePhoto}
+                onClick={handleSaveProfilePhoto}
+                className="px-5 py-2.5 rounded-xl bg-[#FF8B8B] text-white font-bold text-xs shadow-md shadow-pink-200/50 hover:bg-[#ff7a7a] active:scale-95 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                {isUploadingProfilePhoto ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-white" />
+                    <span>Guardando foto...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4 text-white" />
+                    <span>Guardar Foto de Perfil</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -79,6 +79,18 @@
         "storeAddress": { "type": "string" }
       },
       "required": ["whatsappNumber", "storeName"]
+    },
+    "AdminProfile": {
+      "title": "AdminProfile",
+      "description": "User profile with avatar photo URL and metadata for admin user",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid"]
     }
   },
   "firestore": {
@@ -105,6 +117,10 @@
     "/deleted_gift_tables/{tableId}": {
       "schema": "DeletedGiftTable",
       "description": "Papelera de mesas de regalo eliminadas con retención de 15 días antes del borrado permanente"
+    },
+    "/admin_profiles/{userId}": {
+      "schema": "AdminProfile",
+      "description": "Perfil del usuario administrador con foto de perfil personalizada"
     }
   }
 }
