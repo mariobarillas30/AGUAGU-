@@ -380,8 +380,8 @@ export const ProductModal: React.FC<ProductModalProps> = ({
         }
       }
 
-      // 3. Guardar en Firestore una vez que todas las imágenes están subidas y con URL confirmada
-      setUploadProgressText('Guardando información del producto en Firestore...');
+      // 3. Guardar una vez que todas las imágenes están subidas y con URL confirmada
+      setUploadProgressText('Guardando información del producto...');
       console.log('[PRODUCT IMAGE] Guardando producto en Firestore...');
 
       if (mode === 'inventory') {
@@ -420,7 +420,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
       console.error('[PRODUCT IMAGE ERROR] Error al procesar producto:', err);
       setErrorMsg(
         err?.message ||
-          'Error al subir fotografías a Firebase Storage o guardar en Firestore. Verifica tu conexión.'
+          'Error al guardar el producto o subir fotografías. Verifica tu conexión.'
       );
 
       // Marcar los ítems en fallo para retroalimentación visual
@@ -458,7 +458,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
               </h3>
               <p className="text-xs text-[#8C90A4]">
                 {mode === 'inventory'
-                  ? 'Almacena datos en Firestore y fotografías en Firebase Storage'
+                  ? 'Catálogo oficial de productos para mesas de regalos'
                   : 'Producto complementario visible al final de las mesas'}
               </p>
             </div>
@@ -613,11 +613,11 @@ export const ProductModal: React.FC<ProductModalProps> = ({
               <div>
                 <label className="block text-xs font-bold text-[#4A4E69] flex items-center gap-1.5">
                   <Palette className="w-3.5 h-3.5 text-[#E58C8A]" />
-                  Fotografías en Firebase Storage ({images.length}{' '}
+                  Fotografías del Producto ({images.length}{' '}
                   {images.length === 1 ? 'foto' : 'fotos'})
                 </label>
                 <span className="text-[11px] text-[#8C90A4]">
-                  Las fotos se optimizan y guardan en Storage; Firestore solo guarda sus URLs.
+                  Las fotos se optimizan automáticamente con alta resolución.
                 </span>
               </div>
             </div>

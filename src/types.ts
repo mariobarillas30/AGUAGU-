@@ -61,6 +61,11 @@ export interface GiftTable {
   createdAt: string | number;
   itemCount?: number;
   completedCount?: number;
+  status?: string; // 'active' | 'deleted' | 'inactiva'
+  isDeleted?: boolean;
+  deletedAt?: string;
+  deletedBy?: string;
+  expiresAt?: string;
 }
 
 export interface ExtraProduct {

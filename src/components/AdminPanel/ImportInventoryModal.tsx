@@ -643,10 +643,10 @@ export const ImportInventoryModal: React.FC<ImportInventoryModalProps> = ({
                 <Loader2 className="w-8 h-8 animate-spin" />
               </div>
               <h3 className="font-heading font-bold text-lg text-[#4A4A4A]">
-                Importando productos a Firestore...
+                Importando productos al catálogo...
               </h3>
               <p className="text-xs text-[#8E8D8A] max-w-sm mx-auto">
-                Guardando registros en la base de datos de la tienda de forma segura.
+                Guardando registros en el catálogo de la tienda de forma segura.
               </p>
 
               <div className="max-w-xs mx-auto space-y-1.5 pt-2">

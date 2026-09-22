@@ -1335,19 +1335,14 @@ export const AdminDashboard: React.FC = () => {
                 </div>
               </div>
 
-              {/* Informational Banner: Papelera vs Real Firestore Backup */}
-              <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-200/80 flex flex-col sm:flex-row items-start gap-3.5 text-xs text-amber-950">
-                <div className="p-2 rounded-xl bg-amber-100 text-amber-800 shrink-0 mt-0.5">
+              {/* Friendly Notice Card */}
+              <div className="p-4 rounded-2xl bg-emerald-50/70 border border-emerald-200/80 flex items-center gap-3 text-xs text-emerald-900">
+                <div className="p-2 rounded-xl bg-emerald-100 text-emerald-700 shrink-0">
                   <Info className="w-4 h-4" />
                 </div>
-                <div className="space-y-1">
-                  <p className="font-bold text-amber-900">
-                    Diferencia entre Papelera y Respaldo de Base de Datos:
-                  </p>
-                  <p className="text-amber-900/90 leading-relaxed">
-                    Esta papelera funciona a nivel de aplicación para proteger contra eliminaciones accidentales de mesas individuales durante 15 días sin tocar el inventario general. Para copias completas de la base de datos de Firestore (PITR y Backups programados de Google Cloud), consulta la pestaña <button onClick={() => setActiveTab('backups')} className="font-bold underline text-amber-900 hover:text-amber-950 cursor-pointer">Respaldos Firestore</button>.
-                  </p>
-                </div>
+                <p className="leading-relaxed font-medium">
+                  Las mesas en esta sección se mantendrán guardadas durante 15 días antes de ser eliminadas permanentemente. Puedes restaurarlas en cualquier momento con un solo clic.
+                </p>
               </div>
 
               {/* Empty state */}
@@ -1478,7 +1473,7 @@ export const AdminDashboard: React.FC = () => {
                             id={`btn-perm-delete-${dTable.id}`}
                             onClick={() => handlePermanentlyDeleteTable(dTable.id, dTable.familyName)}
                             className="p-2 rounded-xl text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                            title="Eliminar definitivamente de Firestore"
+                            title="Eliminar definitivamente"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -1642,7 +1637,7 @@ export const AdminDashboard: React.FC = () => {
                 {configSaved && (
                   <div className="mb-6 p-4 rounded-2xl bg-[#E0F2F1] border border-[#B2DFDB] text-xs font-bold text-[#00897B] flex items-center gap-2">
                     <Check className="w-4 h-4" />
-                    ¡Configuración guardada exitosamente en Firestore!
+                    ¡Configuración guardada exitosamente!
                   </div>
                 )}
 

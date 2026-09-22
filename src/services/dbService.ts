@@ -7,6 +7,7 @@ import {
   addDoc,
   updateDoc,
   deleteDoc,
+  deleteField,
   query,
   where,
   orderBy,
@@ -467,7 +468,11 @@ export async function getGiftTables(): Promise<GiftTable[]> {
     const tables: GiftTable[] = [];
     
     for (const d of snap.docs) {
-      const tableData = { id: d.id, ...d.data() } as GiftTable;
+      const data = d.data();
+      if (data.status === 'deleted' || data.isDeleted === true) {
+        continue;
+      }
+      const tableData = { id: d.id, ...data } as GiftTable;
       
       // Obtener conteo de items
       const itemsColl = collection(db, GIFT_TABLES_COLLECTION, d.id, TABLE_ITEMS_SUBCOLLECTION);
@@ -502,7 +507,11 @@ export async function getGiftTableBySlug(slug: string): Promise<{ table: GiftTab
     }
 
     const tableDoc = snap.docs[0];
-    const table = { id: tableDoc.id, ...tableDoc.data() } as GiftTable;
+    const data = tableDoc.data();
+    if (data.status === 'deleted' || data.isDeleted === true) {
+      return null;
+    }
+    const table = { id: tableDoc.id, ...data } as GiftTable;
 
     // Obtener los productos de la mesa
     const itemsColl = collection(db, GIFT_TABLES_COLLECTION, tableDoc.id, TABLE_ITEMS_SUBCOLLECTION);
@@ -549,8 +558,11 @@ export async function getGiftTableById(id: string): Promise<{ table: GiftTable; 
     const docRef = doc(db, GIFT_TABLES_COLLECTION, id);
     const snap = await getDoc(docRef);
     if (!snap.exists()) return null;
-
-    const table = { id: snap.id, ...snap.data() } as GiftTable;
+    const data = snap.data();
+    if (data.status === 'deleted' || data.isDeleted === true) {
+      return null;
+    }
+    const table = { id: snap.id, ...data } as GiftTable;
     const itemsColl = collection(db, GIFT_TABLES_COLLECTION, id, TABLE_ITEMS_SUBCOLLECTION);
     const itemsSnap = await getDocs(itemsColl);
     const items: TableItem[] = [];
@@ -1071,7 +1083,13 @@ export function subscribeToGiftTableWithInventory(
     }
 
     const tableDoc = snap.docs[0];
-    currentTable = { id: tableDoc.id, ...tableDoc.data() } as GiftTable;
+    const data = tableDoc.data();
+    if (data.status === 'deleted' || data.isDeleted === true) {
+      currentTable = null;
+      recomputeAndEmit();
+      return;
+    }
+    currentTable = { id: tableDoc.id, ...data } as GiftTable;
 
     // Si aún no estamos escuchando los items de esta mesa, inicializar oyente
     if (!unsubItems) {
@@ -1150,9 +1168,19 @@ export function subscribeToAdminData(
   });
 
   const unsubTables = onSnapshot(collection(db, GIFT_TABLES_COLLECTION), async (snap) => {
-    const rawTables = snap.docs.map((d) => ({ id: d.id, ...d.data() } as GiftTable));
+    const activeDocs = snap.docs.filter((d) => {
+      const data = d.data();
+      return data.status !== 'deleted' && data.isDeleted !== true;
+    });
+
+    const deletedDocs = snap.docs.filter((d) => {
+      const data = d.data();
+      return data.status === 'deleted' || data.isDeleted === true;
+    });
+
+    const rawTables = activeDocs.map((d) => ({ id: d.id, ...d.data() } as GiftTable));
     
-    // Obtener recuentos actualizados
+    // Obtener recuentos actualizados para mesas activas
     const tablesWithCounts: GiftTable[] = await Promise.all(
       rawTables.map(async (t) => {
         try {
@@ -1173,18 +1201,36 @@ export function subscribeToAdminData(
     liveTables = tablesWithCounts.sort(
       (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
     );
+
+    // Mapear mesas de la papelera desde los mismos documentos de gift_tables
+    liveDeletedTables = deletedDocs.map((d) => {
+      const data = d.data() as GiftTable & { isDeleted?: boolean; deletedAt?: string; deletedBy?: string; expiresAt?: string };
+      const deletedAt = data.deletedAt || new Date().toISOString();
+      const expiresAt = data.expiresAt || new Date(new Date(deletedAt).getTime() + 15 * 24 * 60 * 60 * 1000).toISOString();
+      return {
+        id: d.id,
+        familyName: data.familyName || 'Familia Invitada',
+        babyName: data.babyName || '',
+        gender: data.gender || '',
+        eventDate: data.eventDate || '',
+        eventTime: data.eventTime || '',
+        slug: data.slug || '',
+        greeting: data.greeting || '',
+        coverImage: data.coverImage || '',
+        createdAt: data.createdAt || deletedAt,
+        deletedAt,
+        expiresAt,
+        deletedBy: data.deletedBy || 'admin',
+        itemCount: data.itemCount || 0,
+        completedCount: data.completedCount || 0,
+        items: [],
+        originalTableData: data,
+      } as DeletedGiftTable;
+    }).sort((a, b) => new Date(b.deletedAt || 0).getTime() - new Date(a.deletedAt || 0).getTime());
+
     emit();
   }, (err) => {
     console.warn('Listener error on gift_tables:', err);
-  });
-
-  const unsubDeletedTables = onSnapshot(collection(db, DELETED_GIFT_TABLES_COLLECTION), (snap) => {
-    liveDeletedTables = snap.docs
-      .map((d) => ({ id: d.id, ...d.data() } as DeletedGiftTable))
-      .sort((a, b) => new Date(b.deletedAt || 0).getTime() - new Date(a.deletedAt || 0).getTime());
-    emit();
-  }, (err) => {
-    console.warn('Listener error on deleted_gift_tables:', err);
   });
 
   const unsubExtras = onSnapshot(collection(db, EXTRA_PRODUCTS_COLLECTION), (snap) => {
@@ -1206,7 +1252,6 @@ export function subscribeToAdminData(
   return () => {
     unsubProducts();
     unsubTables();
-    unsubDeletedTables();
     unsubExtras();
     unsubConfig();
   };
@@ -1308,75 +1353,44 @@ export async function markItemAsDropped(tableId: string, itemId: string): Promis
 // =============================================================================
 // PAPELERA DE MESAS DE REGALOS (deleted_gift_tables) Y PROTECCIÓN DE DATOS
 // =============================================================================
+// PAPELERA DE MESAS DE REGALOS Y PROTECCIÓN DE DATOS (SOFT DELETE)
+// =============================================================================
 
 /**
- * Mueve una mesa de regalos a la papelera (deleted_gift_tables) con una retención de 15 días.
- * Conserva el 100% de la información de la mesa, su ID original y todos sus table_items con estados y reservas.
- * NO toca ni modifica el inventario ni otras mesas de regalo.
+ * Mueve una mesa de regalos a la papelera (soft-delete) marcando su estado como 'deleted'
+ * y estableciendo isDeleted: true junto con una retención de 15 días.
+ * No borra ítems ni registros físicos para evitar pérdidas accidentales.
  */
 export async function moveToTrashGiftTable(tableId: string, userEmail?: string): Promise<void> {
   if (!tableId || typeof tableId !== 'string') {
     throw new Error('ID de mesa inválido para enviar a la papelera.');
   }
 
-  // 1. Obtener documento principal de la mesa activa
+  // 1. Verificar existencia del documento principal en gift_tables
   const tableRef = doc(db, GIFT_TABLES_COLLECTION, tableId);
   const tableSnap = await withTimeout(getDoc(tableRef), 5000, 'TIMEOUT_GET_TABLE_DOC');
   if (!tableSnap.exists()) {
     throw new Error('La mesa de regalos especificada no existe en la base de datos.');
   }
-  const tableData = tableSnap.data() as GiftTable;
 
-  // 2. Obtener todos los table_items pertenecientes exclusivamente a esta mesa
-  const itemsColl = collection(db, GIFT_TABLES_COLLECTION, tableId, TABLE_ITEMS_SUBCOLLECTION);
-  const itemsSnap = await withTimeout(getDocs(itemsColl), 5000, 'TIMEOUT_GET_ITEMS');
-  const items: TableItem[] = [];
-  itemsSnap.forEach((d) => {
-    items.push({ id: d.id, tableId, ...d.data() } as TableItem);
-  });
-
-  // 3. Registrar marcas de tiempo y retención de 15 días
+  // 2. Registrar marcas de tiempo y retención de 15 días
   const now = new Date();
   const deletedAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + 15 * 24 * 60 * 60 * 1000).toISOString();
-  const completedCount = items.filter(
-    (i) => i.status === 'reservado_en_tienda' || i.status === 'seleccionado' || i.status === 'pagado'
-  ).length;
 
-  const deletedRecord: DeletedGiftTable = {
-    id: tableId,
-    familyName: tableData.familyName || 'Familia Invitada',
-    babyName: tableData.babyName || '',
-    gender: tableData.gender || '',
-    eventDate: tableData.eventDate || '',
-    eventTime: tableData.eventTime || '',
-    slug: tableData.slug || '',
-    greeting: tableData.greeting || '',
-    coverImage: tableData.coverImage || '',
-    createdAt: tableData.createdAt || deletedAt,
-    deletedAt,
-    expiresAt,
-    deletedBy: userEmail || auth.currentUser?.email || 'admin',
-    itemCount: items.length,
-    completedCount,
-    items,
-    originalTableData: tableData,
-  };
-
-  // 4. Mover a la papelera en una sola operación atómica (writeBatch)
-  const batch = writeBatch(db);
-  const trashDocRef = doc(db, DELETED_GIFT_TABLES_COLLECTION, tableId);
-  batch.set(trashDocRef, deletedRecord);
-
-  // Eliminar documentos activos de table_items
-  itemsSnap.forEach((d) => {
-    batch.delete(d.ref);
-  });
-  // Eliminar documento activo principal de gift_tables
-  batch.delete(tableRef);
-
+  // 3. Actualizar estado soft delete directamente en gift_tables
   try {
-    await withTimeout(batch.commit(), 8000, 'TIMEOUT_MOVE_TO_TRASH_BATCH');
+    await withTimeout(
+      updateDoc(tableRef, {
+        status: 'deleted',
+        isDeleted: true,
+        deletedAt,
+        expiresAt,
+        deletedBy: userEmail || auth.currentUser?.email || 'admin',
+      }),
+      8000,
+      'TIMEOUT_UPDATE_TABLE_DOC'
+    );
   } catch (err: any) {
     console.error('[MOVE TO TRASH ERROR]:', err);
     if (err?.code === 'permission-denied') {
@@ -1387,110 +1401,133 @@ export async function moveToTrashGiftTable(tableId: string, userEmail?: string):
 }
 
 /**
- * Obtiene todas las mesas que se encuentran actualmente en la papelera.
+ * Obtiene todas las mesas que se encuentran actualmente en la papelera (soft-deleted).
  */
 export async function getDeletedGiftTables(): Promise<DeletedGiftTable[]> {
+  const deletedMap = new Map<string, DeletedGiftTable>();
+
+  // 1. Obtener mesas con soft-delete de gift_tables
   try {
-    const coll = collection(db, DELETED_GIFT_TABLES_COLLECTION);
+    const coll = collection(db, GIFT_TABLES_COLLECTION);
     const snap = await getDocs(coll);
-    const items: DeletedGiftTable[] = [];
-    snap.forEach((d) => {
-      items.push({ id: d.id, ...d.data() } as DeletedGiftTable);
-    });
-    return items.sort((a, b) => new Date(b.deletedAt || 0).getTime() - new Date(a.deletedAt || 0).getTime());
+    for (const d of snap.docs) {
+      const data = d.data() as GiftTable & { isDeleted?: boolean; deletedAt?: string; deletedBy?: string; expiresAt?: string };
+      if (data.status === 'deleted' || data.isDeleted === true) {
+        const deletedAt = data.deletedAt || new Date().toISOString();
+        const expiresAt = data.expiresAt || new Date(new Date(deletedAt).getTime() + 15 * 24 * 60 * 60 * 1000).toISOString();
+        deletedMap.set(d.id, {
+          id: d.id,
+          familyName: data.familyName || 'Familia Invitada',
+          babyName: data.babyName || '',
+          gender: data.gender || '',
+          eventDate: data.eventDate || '',
+          eventTime: data.eventTime || '',
+          slug: data.slug || '',
+          greeting: data.greeting || '',
+          coverImage: data.coverImage || '',
+          createdAt: data.createdAt || deletedAt,
+          deletedAt,
+          expiresAt,
+          deletedBy: data.deletedBy || 'admin',
+          itemCount: data.itemCount || 0,
+          completedCount: data.completedCount || 0,
+          items: [],
+          originalTableData: data,
+        });
+      }
+    }
   } catch (error) {
-    console.error('Error al obtener mesas eliminadas de la papelera:', error);
-    return [];
+    console.warn('Advertencia al consultar mesas eliminadas en gift_tables:', error);
   }
+
+  // 2. Compatibilidad retroactiva: Si existían registros en deleted_gift_tables, agregarlos
+  try {
+    const legacyColl = collection(db, DELETED_GIFT_TABLES_COLLECTION);
+    const legacySnap = await getDocs(legacyColl);
+    legacySnap.forEach((d) => {
+      if (!deletedMap.has(d.id)) {
+        deletedMap.set(d.id, { id: d.id, ...d.data() } as DeletedGiftTable);
+      }
+    });
+  } catch (_) {
+    // Ignorar si no hay permisos o no existe la colección legacy
+  }
+
+  return Array.from(deletedMap.values()).sort(
+    (a, b) => new Date(b.deletedAt || 0).getTime() - new Date(a.deletedAt || 0).getTime()
+  );
 }
 
 /**
- * Restaura una mesa de la papelera de regreso a su colección principal activa (gift_tables).
- * Conserva su ID original, todos sus datos y recrea fielmente sus table_items con sus reservas.
- * No crea duplicados ni modifica otras mesas ni el inventario.
+ * Restaura una mesa de la papelera de regreso al estado activo.
+ * Conserva su ID original, todos sus table_items intactos y sus datos.
  */
 export async function restoreGiftTable(tableId: string): Promise<void> {
   if (!tableId || typeof tableId !== 'string') {
     throw new Error('ID de mesa inválido para restaurar.');
   }
 
-  const trashDocRef = doc(db, DELETED_GIFT_TABLES_COLLECTION, tableId);
-  const trashSnap = await withTimeout(getDoc(trashDocRef), 5000, 'TIMEOUT_GET_TRASH_DOC');
-  if (!trashSnap.exists()) {
-    throw new Error('La mesa no fue encontrada en la papelera.');
-  }
-
-  const trashData = trashSnap.data() as DeletedGiftTable;
-  const originalData = trashData.originalTableData || {
-    familyName: trashData.familyName,
-    babyName: trashData.babyName,
-    gender: trashData.gender,
-    eventDate: trashData.eventDate,
-    eventTime: trashData.eventTime,
-    slug: trashData.slug,
-    greeting: trashData.greeting,
-    coverImage: trashData.coverImage,
-    createdAt: trashData.createdAt,
-  };
-
   const tableRef = doc(db, GIFT_TABLES_COLLECTION, tableId);
-  const batch = writeBatch(db);
+  const tableSnap = await withTimeout(getDoc(tableRef), 5000, 'TIMEOUT_GET_TABLE_DOC');
 
-  // 1. Recrear documento principal conservando su ID original
-  batch.set(tableRef, {
-    familyName: originalData.familyName || trashData.familyName || 'Familia Invitada',
-    babyName: originalData.babyName || trashData.babyName || '',
-    gender: originalData.gender || trashData.gender || '',
-    eventDate: originalData.eventDate || trashData.eventDate || '',
-    eventTime: originalData.eventTime || trashData.eventTime || '',
-    slug: originalData.slug || trashData.slug || '',
-    greeting: originalData.greeting || trashData.greeting || '',
-    coverImage: originalData.coverImage || trashData.coverImage || '',
-    createdAt: originalData.createdAt || trashData.createdAt || new Date().toISOString(),
-  });
-
-  // 2. Recrear cada table_item en la subcolección con sus datos y reservas originales
-  if (Array.isArray(trashData.items) && trashData.items.length > 0) {
-    for (const item of trashData.items) {
-      const itemDocRef = doc(db, GIFT_TABLES_COLLECTION, tableId, TABLE_ITEMS_SUBCOLLECTION, item.id);
-      const cleanItemData: Record<string, any> = {
-        tableId,
-        productId: item.productId || '',
-        name: item.name || '',
-        description: item.description || '',
-        price: item.price || 0,
-        imageUrl: item.imageUrl || '',
-        images: Array.isArray(item.images) ? item.images : (item.imageUrl ? [item.imageUrl] : []),
-        status: item.status || 'disponible',
-        updatedAt: item.updatedAt || new Date().toISOString(),
-      };
-      if (item.donorName) cleanItemData.donorName = item.donorName;
-      if (item.donorPhone) cleanItemData.donorPhone = item.donorPhone;
-      if (item.donorEmail) cleanItemData.donorEmail = item.donorEmail;
-      if (item.paymentMethod) cleanItemData.paymentMethod = item.paymentMethod;
-      if (item.notes) cleanItemData.notes = item.notes;
-
-      batch.set(itemDocRef, cleanItemData);
+  if (tableSnap.exists()) {
+    // Caso 1: La mesa existe en gift_tables con soft-delete; remover marcas
+    try {
+      await withTimeout(
+        updateDoc(tableRef, {
+          status: 'active',
+          isDeleted: false,
+          deletedAt: deleteField(),
+          deletedBy: deleteField(),
+          expiresAt: deleteField(),
+        }),
+        8000,
+        'TIMEOUT_RESTORE_TABLE'
+      );
+    } catch (err: any) {
+      console.error('[RESTORE TABLE ERROR]:', err);
+      if (err?.code === 'permission-denied') {
+        throw new Error('Permisos insuficientes en Firestore para restaurar esta mesa.');
+      }
+      throw new Error(err?.message || 'No fue posible restaurar la mesa.');
     }
+  } else {
+    // Caso 2: Registro legacy en deleted_gift_tables
+    const legacyRef = doc(db, DELETED_GIFT_TABLES_COLLECTION, tableId);
+    const legacySnap = await withTimeout(getDoc(legacyRef), 5000, 'TIMEOUT_GET_LEGACY_DOC');
+    if (!legacySnap.exists()) {
+      throw new Error('La mesa no fue encontrada para restaurar.');
+    }
+    const trashData = legacySnap.data() as DeletedGiftTable;
+    const originalData = trashData.originalTableData || trashData;
+
+    await setDoc(tableRef, {
+      familyName: originalData.familyName || trashData.familyName || 'Familia Invitada',
+      babyName: originalData.babyName || trashData.babyName || '',
+      gender: originalData.gender || trashData.gender || '',
+      eventDate: originalData.eventDate || trashData.eventDate || '',
+      eventTime: originalData.eventTime || trashData.eventTime || '',
+      slug: originalData.slug || trashData.slug || '',
+      greeting: originalData.greeting || trashData.greeting || '',
+      coverImage: originalData.coverImage || trashData.coverImage || '',
+      createdAt: originalData.createdAt || trashData.createdAt || new Date().toISOString(),
+      status: 'active',
+      isDeleted: false,
+    });
   }
 
-  // 3. Eliminar de la papelera
-  batch.delete(trashDocRef);
-
+  // Limpiar opcionalmente de deleted_gift_tables si existía
   try {
-    await withTimeout(batch.commit(), 8000, 'TIMEOUT_RESTORE_BATCH');
-  } catch (err: any) {
-    console.error('[RESTORE TABLE ERROR]:', err);
-    if (err?.code === 'permission-devied') {
-      throw new Error('Permisos insuficientes en Firestore para restaurar esta mesa.');
-    }
-    throw new Error(err?.message || 'No fue posible restaurar la mesa desde la papelera.');
+    const legacyRef = doc(db, DELETED_GIFT_TABLES_COLLECTION, tableId);
+    await deleteDoc(legacyRef);
+  } catch (_) {
+    // Ignorar si ya no existe o falló silenciosamente
   }
 }
 
 /**
  * Elimina definitivamente y de forma permanente una mesa de la papelera de Firestore.
- * Solo afecta al documento correspondiente en deleted_gift_tables.
+ * Limpia su documento en gift_tables junto con sus table_items en la subcolección.
  * NO toca productos, inventario, otras mesas ni reservas ajenas.
  */
 export async function permanentlyDeleteGiftTable(tableId: string): Promise<void> {
@@ -1498,9 +1535,15 @@ export async function permanentlyDeleteGiftTable(tableId: string): Promise<void>
     throw new Error('ID de mesa inválido para eliminación definitiva.');
   }
 
-  const trashDocRef = doc(db, DELETED_GIFT_TABLES_COLLECTION, tableId);
+  const tableRef = doc(db, GIFT_TABLES_COLLECTION, tableId);
+  const itemsColl = collection(db, GIFT_TABLES_COLLECTION, tableId, TABLE_ITEMS_SUBCOLLECTION);
+
   try {
-    await withTimeout(deleteDoc(trashDocRef), 6000, 'TIMEOUT_PERMANENT_DELETE');
+    const itemsSnap = await getDocs(itemsColl);
+    const batch = writeBatch(db);
+    itemsSnap.forEach((d) => batch.delete(d.ref));
+    batch.delete(tableRef);
+    await withTimeout(batch.commit(), 8000, 'TIMEOUT_PERMANENT_DELETE');
   } catch (err: any) {
     console.error('[PERMANENT DELETE ERROR]:', err);
     if (err?.code === 'permission-denied') {
@@ -1508,11 +1551,19 @@ export async function permanentlyDeleteGiftTable(tableId: string): Promise<void>
     }
     throw new Error(err?.message || 'Error al eliminar definitivamente la mesa de la papelera.');
   }
+
+  // Limpiar también de deleted_gift_tables si existía
+  try {
+    const legacyRef = doc(db, DELETED_GIFT_TABLES_COLLECTION, tableId);
+    await deleteDoc(legacyRef);
+  } catch (_) {
+    // Ignorar
+  }
 }
 
 /**
  * Reemplazado por moveToTrashGiftTable: Al eliminar una mesa desde la UI del administrador,
- * se mueve a deleted_gift_tables para permitir su recuperación durante 15 días.
+ * se mueve a la papelera (soft-delete) para permitir su recuperación durante 15 días.
  */
 export async function deleteGiftTable(tableId: string): Promise<void> {
   return moveToTrashGiftTable(tableId);

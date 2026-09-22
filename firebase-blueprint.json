@@ -91,6 +91,20 @@
         "updatedAt": { "type": "string" }
       },
       "required": ["uid"]
+    },
+    "DeletedGiftTable": {
+      "title": "DeletedGiftTable",
+      "description": "Papelera de mesas de regalo eliminadas con retención de 15 días antes del borrado permanente",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "familyName": { "type": "string" },
+        "babyName": { "type": "string" },
+        "deletedAt": { "type": "string" },
+        "expiresAt": { "type": "string" },
+        "deletedBy": { "type": "string" }
+      },
+      "required": ["id", "familyName", "deletedAt"]
     }
   },
   "firestore": {
