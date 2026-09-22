@@ -67,7 +67,7 @@ import { uploadStoreLogo, uploadAdminProfilePhoto } from '../../services/storage
 
 export const AdminDashboard: React.FC = () => {
   const { user, isAdmin, logout, updateUserProfilePhoto } = useAuth();
-  const [activeTab, setActiveTab] = useState<'tables' | 'trash' | 'inventory' | 'extras' | 'config' | 'backups'>('tables');
+  const [activeTab, setActiveTab] = useState<'tables' | 'trash' | 'inventory' | 'extras' | 'config'>('tables');
   
   // Data states
   const [products, setProducts] = useState<Product[]>([]);
@@ -818,22 +818,6 @@ export const AdminDashboard: React.FC = () => {
           >
             <Settings className="w-4 h-4" />
             Configuración & Perfil
-          </button>
-
-          <button
-            id="tab-backups-btn"
-            onClick={() => {
-              setActiveTab('backups');
-              setSelectedTableData(null);
-            }}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer active:scale-95 ${
-              activeTab === 'backups'
-                ? 'bg-emerald-100 text-emerald-800 shadow-xs border border-emerald-200'
-                : 'text-[#5D5C5B] hover:text-emerald-700 hover:bg-emerald-50/50'
-            }`}
-          >
-            <ShieldCheck className="w-4 h-4 text-emerald-600" />
-            Respaldos Firestore
           </button>
         </div>
       </div>
@@ -1825,184 +1809,7 @@ export const AdminDashboard: React.FC = () => {
             </div>
           )}
 
-          {/* ================================================================= */}
-          {/* TAB 5: RESPALDOS REALES DE FIRESTORE (PITR & SCHEDULED BACKUPS) */}
-          {/* ================================================================= */}
-          {activeTab === 'backups' && (
-            <div className="space-y-6 max-w-4xl mx-auto">
-              {/* Main Banner */}
-              <div className="bg-white p-6 sm:p-8 rounded-3xl border border-gray-100 shadow-xs">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-12 h-12 rounded-2xl bg-emerald-100 flex items-center justify-center text-emerald-700 shadow-xs">
-                    <ShieldCheck className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h2 className="font-heading font-bold text-xl text-[#4A4A4A]">
-                      Protección y Respaldos Reales de Firestore
-                    </h2>
-                    <p className="text-xs text-[#8E8D8A]">
-                      Capacidades nativas de Google Cloud Firestore para Point-in-Time Recovery y Backups programados
-                    </p>
-                  </div>
-                </div>
 
-                <div className="p-4 rounded-2xl bg-emerald-50/80 border border-emerald-200 text-xs text-emerald-950 space-y-1">
-                  <p className="font-bold flex items-center gap-1.5 text-emerald-900">
-                    <Check className="w-4 h-4 text-emerald-600" />
-                    Respaldo Real de Base de Datos vs. Papelera de la Aplicación
-                  </p>
-                  <p className="text-emerald-900/90 leading-relaxed">
-                    La papelera de mesas en esta app es para la recuperación rápida de mesas eliminadas en el día a día. Los respaldos de Firestore a continuación son la verdadera salvaguarda de infraestructura a nivel de Google Cloud ante incidentes mayores, fallos de software o desastres de base de datos.
-                  </p>
-                </div>
-              </div>
-
-              {/* Grid with PITR and Scheduled Backups */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* 1. Point-in-Time Recovery (PITR) */}
-                <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-xs flex flex-col justify-between">
-                  <div>
-                    <div className="flex items-center justify-between mb-3">
-                      <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-800 border border-blue-200">
-                        1. Point-in-Time Recovery (PITR)
-                      </span>
-                      <span className="text-[11px] font-bold text-blue-700">Hasta 7 días</span>
-                    </div>
-
-                    <h3 className="font-heading font-bold text-base text-[#4A4A4A] mb-2">
-                      Recuperación a cualquier segundo
-                    </h3>
-                    <p className="text-xs text-[#6B7280] leading-relaxed mb-4">
-                      PITR protege tus datos de Firestore contra escrituras o eliminaciones accidentales continuas. Permite restaurar toda la base de datos a cualquier segundo específico dentro de una ventana de retención de 7 días.
-                    </p>
-
-                    <div className="space-y-3 bg-[#FAF7F2] p-3.5 rounded-2xl border border-[#E8DFC8]/60 text-xs mb-4">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[#8E8D8A] font-semibold">Comando gcloud para habilitar:</span>
-                        <button
-                          onClick={() =>
-                            copyCommandText(
-                              "gcloud firestore databases update --database='(default)' --point-in-time-recovery-enable",
-                              'pitr-enable'
-                            )
-                          }
-                          className="px-2 py-1 rounded-lg bg-white border border-gray-200 text-[11px] font-bold text-gray-700 hover:text-blue-600 hover:border-blue-300 flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
-                        >
-                          {copiedCommand === 'pitr-enable' ? (
-                            <>
-                              <Check className="w-3 h-3 text-emerald-600" /> Copiado
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-3 h-3" /> Copiar
-                            </>
-                          )}
-                        </button>
-                      </div>
-                      <div className="p-2.5 bg-slate-900 text-emerald-400 font-mono text-[11px] rounded-xl overflow-x-auto select-all">
-                        gcloud firestore databases update --database='(default)' --point-in-time-recovery-enable
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="pt-3 border-t border-gray-100 text-[11px] text-[#8E8D8A]">
-                    💡 También puedes activarlo en <strong>Firebase Console &gt; Firestore Database &gt; Configuración</strong>.
-                  </div>
-                </div>
-
-                {/* 2. Scheduled Backups */}
-                <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-xs flex flex-col justify-between">
-                  <div>
-                    <div className="flex items-center justify-between mb-3">
-                      <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-100 text-purple-800 border border-purple-200">
-                        2. Backups Programados (Schedules)
-                      </span>
-                      <span className="text-[11px] font-bold text-purple-700">14 días de retención</span>
-                    </div>
-
-                    <h3 className="font-heading font-bold text-base text-[#4A4A4A] mb-2">
-                      Copias automáticas diarias
-                    </h3>
-                    <p className="text-xs text-[#6B7280] leading-relaxed mb-4">
-                      Programa copias de seguridad automáticas diarias de todas las colecciones de Firestore con retención garantizada de 14 días en la infraestructura de Google Cloud.
-                    </p>
-
-                    <div className="space-y-3 bg-[#FAF7F2] p-3.5 rounded-2xl border border-[#E8DFC8]/60 text-xs mb-4">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[#8E8D8A] font-semibold">Comando gcloud para programar:</span>
-                        <button
-                          onClick={() =>
-                            copyCommandText(
-                              "gcloud firestore backups schedules create --database='(default)' --recurrence=DAILY --retention=14d",
-                              'schedule-create'
-                            )
-                          }
-                          className="px-2 py-1 rounded-lg bg-white border border-gray-200 text-[11px] font-bold text-gray-700 hover:text-purple-600 hover:border-purple-300 flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
-                        >
-                          {copiedCommand === 'schedule-create' ? (
-                            <>
-                              <Check className="w-3 h-3 text-emerald-600" /> Copiado
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-3 h-3" /> Copiar
-                            </>
-                          )}
-                        </button>
-                      </div>
-                      <div className="p-2.5 bg-slate-900 text-emerald-400 font-mono text-[11px] rounded-xl overflow-x-auto select-all">
-                        gcloud firestore backups schedules create --database='(default)' --recurrence=DAILY --retention=14d
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="pt-3 border-t border-gray-100 text-[11px] text-[#8E8D8A]">
-                    💡 Para ver tus backups generados: <code className="bg-gray-100 px-1.5 py-0.5 rounded text-gray-700">gcloud firestore backups list</code>
-                  </div>
-                </div>
-              </div>
-
-              {/* Disaster Recovery Guide */}
-              <div className="bg-white p-6 sm:p-7 rounded-3xl border border-gray-100 shadow-xs space-y-4">
-                <h3 className="font-heading font-bold text-base text-[#4A4A4A] flex items-center gap-2">
-                  <Terminal className="w-4 h-4 text-emerald-600" />
-                  Procedimiento de Restauración ante Desastres de Firestore
-                </h3>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-                  <div className="p-4 rounded-2xl bg-gray-50 border border-gray-100 space-y-1.5">
-                    <span className="w-5 h-5 rounded-full bg-gray-200 text-gray-700 font-bold flex items-center justify-center text-[10px]">
-                      1
-                    </span>
-                    <h4 className="font-bold text-[#4A4A4A]">Identificar el Respaldo</h4>
-                    <p className="text-[#6B7280] leading-relaxed">
-                      Ejecuta <code className="text-blue-600 font-mono">gcloud firestore backups list</code> para obtener el identificador exacto de la copia de seguridad.
-                    </p>
-                  </div>
-
-                  <div className="p-4 rounded-2xl bg-gray-50 border border-gray-100 space-y-1.5">
-                    <span className="w-5 h-5 rounded-full bg-gray-200 text-gray-700 font-bold flex items-center justify-center text-[10px]">
-                      2
-                    </span>
-                    <h4 className="font-bold text-[#4A4A4A]">Restaurar Base de Datos</h4>
-                    <p className="text-[#6B7280] leading-relaxed">
-                      Ejecuta el comando <code className="text-purple-600 font-mono">gcloud firestore databases restore</code> especificando el ID del backup.
-                    </p>
-                  </div>
-
-                  <div className="p-4 rounded-2xl bg-gray-50 border border-gray-100 space-y-1.5">
-                    <span className="w-5 h-5 rounded-full bg-gray-200 text-gray-700 font-bold flex items-center justify-center text-[10px]">
-                      3
-                    </span>
-                    <h4 className="font-bold text-[#4A4A4A]">Verificación Inmediata</h4>
-                    <p className="text-[#6B7280] leading-relaxed">
-                      La app se reconecta automáticamente en tiempo real sin requerir cambios de código ni reinstalación.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
         </>
       )}
 
